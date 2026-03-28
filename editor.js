@@ -575,6 +575,13 @@ function initTimeline() {
     engine.seek(Math.max(0, x / pxPerSec));
   });
 
+  // Ctrl+Wheel → zoom in/out
+  document.querySelector('.timeline-panel').addEventListener('wheel', e => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setZoom(zoomIdx + (e.deltaY < 0 ? 1 : -1));
+  }, { passive: false });
+
   // Click empty timeline area to deselect / seek
   tlScrollArea.addEventListener('mousedown', onTimelineMouseDown);
 

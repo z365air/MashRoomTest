@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MashRoom Test – Editor</title>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════ HEADER ════════════════════════════════ -->
+  <header class="app-header">
+
+    <div class="header-left">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="32" cy="58" rx="14" ry="3.5" fill="rgba(0,0,0,0.25)"/>
+          <ellipse cx="32" cy="46" rx="16" ry="13" fill="#F0DCB8"/>
+          <ellipse cx="32" cy="25" rx="29" ry="24" fill="#8B1010"/>
+          <ellipse cx="32" cy="25" rx="27" ry="22" fill="#C02020"/>
+          <ellipse cx="32" cy="46" rx="16" ry="13" fill="#F0DCB8"/>
+          <ellipse cx="32" cy="11" rx="5" ry="4.5" fill="rgba(255,255,235,0.9)"/>
+          <ellipse cx="19" cy="21" rx="4" ry="3.5" fill="rgba(255,255,235,0.88)"/>
+          <ellipse cx="45" cy="19" rx="4" ry="3.5" fill="rgba(255,255,235,0.88)"/>
+          <ellipse cx="26" cy="38" rx="3.5" ry="3" fill="#FFF5E0"/>
+          <ellipse cx="38" cy="38" rx="3.5" ry="3" fill="#FFF5E0"/>
+          <ellipse cx="26" cy="38.5" rx="1.8" ry="1.6" fill="#1A0808"/>
+          <ellipse cx="38" cy="38.5" rx="1.8" ry="1.6" fill="#1A0808"/>
+          <line x1="23" y1="34" x2="29" y2="36" stroke="#1A0808" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="35" y1="36" x2="41" y2="34" stroke="#1A0808" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="20" y1="54" x2="30" y2="44" stroke="#B02020" stroke-width="2.5" stroke-linecap="round"/>
+          <ellipse cx="30" cy="44" rx="3" ry="3.2" fill="#999"/>
+          <line x1="34" y1="44" x2="44" y2="54" stroke="#B02020" stroke-width="2.5" stroke-linecap="round"/>
+          <ellipse cx="34" cy="44" rx="3" ry="3.2" fill="#999"/>
+        </svg>
+        <div class="brand-name">
+          <span class="brand-mash">Mash</span><span class="brand-room">Room</span>
+          <span class="brand-test">Test</span>
+        </div>
+      </div>
+
+      <div class="project-name-wrap">
+        <input type="text" id="projectName" class="project-name-input" value="Untitled Project" spellcheck="false">
+      </div>
+    </div>
+
+    <!-- Transport -->
+    <div class="transport">
+      <button class="transport-btn" id="btnRestart" title="Restart (Home)">
+        <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 5h2v10H4V5zm10.394.689l-7.394 4.311 7.394 4.311V5.689z"/></svg>
+      </button>
+      <button class="transport-btn" id="btnStop" title="Stop (Space)">
+        <svg viewBox="0 0 20 20" fill="currentColor"><rect x="4" y="4" width="12" height="12" rx="1"/></svg>
+      </button>
+      <button class="transport-btn transport-play" id="btnPlay" title="Play / Pause (Space)">
+        <svg class="icon-play" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 3.1l11 6.9-11 6.9V3.1z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 20 20" fill="currentColor" style="display:none"><rect x="4" y="3" width="4" height="14" rx="1"/><rect x="12" y="3" width="4" height="14" rx="1"/></svg>
+      </button>
+
+      <div class="time-display" id="timeDisplay">
+        <span class="time-min" id="timeMin">00</span>:<span class="time-sec" id="timeSec">00</span>.<span class="time-ms" id="timeMs">000</span>
+      </div>
+
+      <div class="bpm-control">
+        <label class="bpm-label">BPM</label>
+        <input type="number" id="bpmInput" class="bpm-input" value="120" min="40" max="300" step="1">
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="master-vol-wrap">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" class="master-icon">
+          <path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z"/>
+        </svg>
+        <input type="range" id="masterVol" class="master-vol-slider" min="0" max="100" value="80" title="Master Volume">
+        <span class="master-vol-val" id="masterVolVal">80%</span>
+      </div>
+
+      <button class="btn-save" id="btnSave" title="Save project">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M4 4v12h12V7.414L13.586 4H4zm8 0v4H8V4h4zM6 10h8v6H6v-6z"/></svg>
+        Save
+      </button>
+
+      <button class="btn-export" id="btnExport" title="Export mix as WAV">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"/></svg>
+        Export WAV
+      </button>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════ MAIN ════════════════════════════════ -->
+  <main class="app-main">
+
+    <!-- Sidebar: track controls -->
+    <aside class="track-sidebar" id="trackSidebar">
+
+      <!-- Track rows are injected here -->
+      <div class="track-list" id="trackList">
+        <div class="empty-state" id="emptyState">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" width="56" height="56">
+            <circle cx="24" cy="24" r="20" fill="#252525"/>
+            <path d="M16 32V20l16 6-16 6z" fill="#CC2222" opacity="0.8"/>
+            <rect x="14" y="14" width="3" height="14" rx="1.5" fill="#444"/>
+            <rect x="31" y="14" width="3" height="14" rx="1.5" fill="#444"/>
+          </svg>
+          <p>No tracks yet</p>
+          <p class="empty-hint">Click <strong>+ Add Track</strong> or drag audio files here</p>
+        </div>
+      </div>
+
+      <!-- Add Track button -->
+      <div class="add-track-bar">
+        <button class="btn-add-track" id="btnAddTrack">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z"/></svg>
+          Add Track
+        </button>
+        <input type="file" id="fileInput" accept="audio/*" multiple style="display:none">
+      </div>
+    </aside>
+
+    <!-- Timeline canvas area -->
+    <div class="timeline-area" id="timelineArea">
+      <div class="timeline-header-row">
+        <canvas class="timeline-ruler" id="timelineRuler" height="28"></canvas>
+      </div>
+      <div class="timeline-body" id="timelineBody">
+        <!-- Per-track waveform canvases are injected here -->
+        <canvas class="timeline-playhead-overlay" id="playheadOverlay"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <!-- ═══════════════════════════════ STATUS BAR ════════════════════════════ -->
+  <footer class="status-bar">
+    <span id="statusMsg">Ready – drop audio files onto the timeline or click Add Track</span>
+    <span class="status-right">
+      <span id="statusTracks">0 tracks</span>
+      <span class="sep">·</span>
+      <span id="statusDuration">0:00</span>
+    </span>
+  </footer>
+
+  <!-- ══ Drop overlay ══ -->
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-message">
+      <svg viewBox="0 0 48 48" fill="none" width="64" height="64">
+        <path d="M24 4C12.954 4 4 12.954 4 24s8.954 20 20 20 20-8.954 20-20S35.046 4 24 4z" fill="#CC2222" opacity="0.15"/>
+        <path d="M24 14v13M18 21l6-7 6 7" stroke="#CC2222" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M16 32h16" stroke="#CC2222" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <p>Drop audio files to add tracks</p>
+    </div>
+  </div>
+
+  <!-- ══ Export modal ══ -->
+  <div class="modal-overlay" id="exportModal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Exporting Mix…</h2>
+      </div>
+      <div class="modal-body">
+        <div class="export-progress-wrap">
+          <div class="export-progress-bar" id="exportProgressBar" style="width:0%"></div>
+        </div>
+        <p class="export-status-text" id="exportStatusText">Rendering audio…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Track template (hidden, cloned by JS) ══ -->
+  <template id="trackTemplate">
+    <div class="track-row" data-track-id="">
+      <div class="track-color-bar"></div>
+      <div class="track-controls">
+        <div class="track-top">
+          <input type="text" class="track-name-input" value="Track" spellcheck="false">
+          <div class="track-btns">
+            <button class="track-btn btn-mute" title="Mute">M</button>
+            <button class="track-btn btn-solo" title="Solo">S</button>
+            <button class="track-btn btn-delete" title="Delete track">
+              <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="track-bottom">
+          <div class="track-knob-group">
+            <label class="knob-label">VOL</label>
+            <input type="range" class="track-volume" min="0" max="100" value="80">
+            <span class="knob-val vol-val">80</span>
+          </div>
+          <div class="track-knob-group">
+            <label class="knob-label">PAN</label>
+            <input type="range" class="track-pan" min="-100" max="100" value="0">
+            <span class="knob-val pan-val">C</span>
+          </div>
+          <div class="track-info">
+            <span class="track-duration">0:00</span>
+          </div>
+        </div>
+        <div class="track-waveform-mini">
+          <canvas class="waveform-mini-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script src="editor.js"></script>
+</body>
+</html>

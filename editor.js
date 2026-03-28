@@ -941,6 +941,620 @@ function rebuildLayerUI() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   (Clip management, selection, clipboard, transport, keyboard,
-    context menu, status, drag-drop, init — next chunks…)
+   CLIP MANAGEMENT
    ═══════════════════════════════════════════════════════════ */
+
+function addClip(fileId, layerId, startTime, duration) {
+  const file = state.files.get(fileId);
+  if (!file) return null;
+  const id = uid();
+  const clip = { id, fileId, layerId, startTime, duration: duration || file.duration, trimStart: 0 };
+  state.clips.push(clip);
+  renderClip(clip);
+  updateContentSize();
+  document.getElementById('tlEmptyMsg').style.display = 'none';
+  updateStatusBar();
+  state.dirty = true;
+  return clip;
+}
+
+function removeClip(clipId) {
+  const idx = state.clips.findIndex(c => c.id === clipId);
+  if (idx === -1) return;
+  state.clips.splice(idx, 1);
+  state.selection.delete(clipId);
+  const el = getClipEl(clipId);
+  if (el) el.remove();
+  updateContentSize();
+  if (!state.clips.length) document.getElementById('tlEmptyMsg').style.display = '';
+  updateStatusBar();
+  state.dirty = true;
+}
+
+function getClipEl(clipId) {
+  return tlContent.querySelector(`.clip[data-clip-id="${clipId}"]`);
+}
+
+function clipLeft(clip)  { return clip.startTime * pxPerSec; }
+function clipTop(clip)   { return layerIndex(clip.layerId) * LAYER_H + 1; }
+function clipWidth(clip) { return Math.max(MIN_CLIP_PX, clip.duration * pxPerSec); }
+
+function renderClip(clip) {
+  const file  = state.files.get(clip.fileId);
+  const layer = state.layers.find(l => l.id === clip.layerId);
+  if (!file || !layer) return;
+
+  const el = document.createElement('div');
+  el.className = 'clip';
+  el.dataset.clipId = clip.id;
+  el.style.setProperty('--clip-color', layer.color);
+  el.style.left   = clipLeft(clip) + 'px';
+  el.style.top    = clipTop(clip)  + 'px';
+  el.style.width  = clipWidth(clip) + 'px';
+  el.style.height = (LAYER_H - 2) + 'px';
+
+  el.innerHTML = `
+    <div class="clip-bg"></div>
+    <canvas class="clip-wave-canvas"></canvas>
+    <div class="clip-label">
+      <span class="clip-label-text">${escapeHtml(file.name)}</span>
+    </div>
+    <div class="clip-resize-handle"></div>
+  `;
+
+  // Draw waveform
+  requestAnimationFrame(() => {
+    const canvas = el.querySelector('.clip-wave-canvas');
+    drawPeaks(canvas, file.peaks, layer.color, {
+      trimStart: clip.trimStart,
+      duration: clip.duration,
+      fileDuration: file.duration,
+    });
+  });
+
+  attachClipInteractions(el, clip);
+  tlContent.insertBefore(el, tlPlayhead);
+}
+
+function refreshClipEl(clip) {
+  const el = getClipEl(clip.id);
+  if (!el) return;
+  el.style.left  = clipLeft(clip)  + 'px';
+  el.style.top   = clipTop(clip)   + 'px';
+  el.style.width = clipWidth(clip) + 'px';
+  // Redraw waveform if size changed
+  const file = state.files.get(clip.fileId);
+  const layer = state.layers.find(l => l.id === clip.layerId);
+  if (file && layer) {
+    const canvas = el.querySelector('.clip-wave-canvas');
+    requestAnimationFrame(() => drawPeaks(canvas, file.peaks, layer.color, {
+      trimStart: clip.trimStart, duration: clip.duration, fileDuration: file.duration,
+    }));
+  }
+}
+
+function refreshAllClips() {
+  for (const clip of state.clips) refreshClipEl(clip);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CLIP INTERACTIONS  (drag move, drag resize, selection)
+   ═══════════════════════════════════════════════════════════ */
+
+function attachClipInteractions(el, clip) {
+  const resizeHandle = el.querySelector('.clip-resize-handle');
+
+  // ── Move drag ──
+  el.addEventListener('mousedown', e => {
+    if (e.target === resizeHandle) return; // handled below
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    // Selection
+    if (!e.shiftKey && !state.selection.has(clip.id)) deselectAll();
+    if (e.shiftKey) toggleSelect(clip.id);
+    else selectClip(clip.id);
+
+    // Collect all selected clips' original state for multi-drag
+    const selected = state.clips.filter(c => state.selection.has(c.id));
+    const primary  = clip;
+    const snapshots = selected.map(c => ({
+      clip: c, origStart: c.startTime, origLayerIdx: layerIndex(c.layerId),
+    }));
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let moved = false;
+
+    el.classList.add('dragging');
+
+    const onMove = e => {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+      moved = true;
+
+      const dTime  = dx / pxPerSec;
+      const dLayer = Math.round(dy / LAYER_H);
+
+      for (const s of snapshots) {
+        let newStart = Math.max(0, s.origStart + dTime);
+        if (snapEnabled) newStart = snap(newStart);
+        const newLIdx = Math.max(0, Math.min(state.layers.length - 1, s.origLayerIdx + dLayer));
+
+        s.clip.startTime = newStart;
+        s.clip.layerId   = state.layers[newLIdx].id;
+
+        const cEl = getClipEl(s.clip.id);
+        if (cEl) {
+          cEl.style.left = clipLeft(s.clip) + 'px';
+          cEl.style.top  = clipTop(s.clip)  + 'px';
+          // Update clip color if layer changed
+          const layer = state.layers[newLIdx];
+          cEl.style.setProperty('--clip-color', layer.color);
+        }
+      }
+      updateContentSize();
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      el.classList.remove('dragging');
+      if (moved) {
+        for (const s of snapshots) refreshClipEl(s.clip);
+        updateContentSize();
+        state.dirty = true;
+      }
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  // ── Resize drag (right handle) ──
+  resizeHandle.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const origDur = clip.duration;
+    const startX  = e.clientX;
+    const file    = state.files.get(clip.fileId);
+    const maxDur  = file ? file.duration - clip.trimStart : Infinity;
+
+    el.classList.add('resizing');
+
+    const onMove = e => {
+      const dx = e.clientX - startX;
+      let newDur = Math.max(0.1, origDur + dx / pxPerSec);
+      newDur = Math.min(newDur, maxDur);
+      clip.duration = newDur;
+      el.style.width = clipWidth(clip) + 'px';
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      el.classList.remove('resizing');
+      refreshClipEl(clip);
+      updateContentSize();
+      state.dirty = true;
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  // ── Context menu ──
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!state.selection.has(clip.id)) { deselectAll(); selectClip(clip.id); }
+    showCtxMenu(e.clientX, e.clientY, 'clip');
+  });
+}
+
+/* Click on empty timeline background — deselect / marquee */
+function onTimelineMouseDown(e) {
+  if (e.target !== tlScrollArea && e.target !== tlContent &&
+      !e.target.classList.contains('layer-bg-row')) return;
+  if (e.button !== 0) return;
+
+  deselectAll();
+
+  // Marquee selection
+  const rect  = tlScrollArea.getBoundingClientRect();
+  const startX = e.clientX - rect.left + tlScrollArea.scrollLeft;
+  const startY = e.clientY - rect.top  + tlScrollArea.scrollTop;
+  const marquee = document.getElementById('selMarquee');
+  marquee.removeAttribute('hidden');
+  marquee.style.left = startX + 'px'; marquee.style.top  = startY + 'px';
+  marquee.style.width = '0'; marquee.style.height = '0';
+
+  const onMove = e => {
+    const cx = e.clientX - rect.left + tlScrollArea.scrollLeft;
+    const cy = e.clientY - rect.top  + tlScrollArea.scrollTop;
+    const x1 = Math.min(startX, cx), y1 = Math.min(startY, cy);
+    const x2 = Math.max(startX, cx), y2 = Math.max(startY, cy);
+    marquee.style.left   = x1 + 'px'; marquee.style.top    = y1 + 'px';
+    marquee.style.width  = (x2 - x1) + 'px'; marquee.style.height = (y2 - y1) + 'px';
+
+    // Hit-test clips
+    deselectAll(true);
+    for (const clip of state.clips) {
+      const cl = clipLeft(clip), ct = clipTop(clip);
+      const cr = cl + clipWidth(clip), cb = ct + LAYER_H - 2;
+      if (cl < x2 && cr > x1 && ct < y2 && cb > y1) selectClip(clip.id, true);
+    }
+  };
+
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup',   onUp);
+    marquee.setAttribute('hidden', '');
+  };
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup',   onUp);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SELECTION
+   ═══════════════════════════════════════════════════════════ */
+
+function selectClip(clipId, silent) {
+  state.selection.add(clipId);
+  const el = getClipEl(clipId);
+  if (el) el.classList.add('selected');
+  if (!silent) updateSelectionStatus();
+}
+
+function toggleSelect(clipId) {
+  if (state.selection.has(clipId)) {
+    state.selection.delete(clipId);
+    const el = getClipEl(clipId);
+    if (el) el.classList.remove('selected');
+  } else {
+    selectClip(clipId);
+  }
+  updateSelectionStatus();
+}
+
+function deselectAll(silent) {
+  for (const id of state.selection) {
+    const el = getClipEl(id);
+    if (el) el.classList.remove('selected');
+  }
+  state.selection.clear();
+  if (!silent) updateSelectionStatus();
+}
+
+function selectAll() {
+  for (const clip of state.clips) selectClip(clip.id, true);
+  updateSelectionStatus();
+}
+
+function updateSelectionStatus() {
+  const n = state.selection.size;
+  const el = document.getElementById('statSelection');
+  if (el) el.textContent = n ? `${n} selected` : '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CLIPBOARD  (cut / copy / paste / delete)
+   ═══════════════════════════════════════════════════════════ */
+
+function copySelected() {
+  const selected = state.clips.filter(c => state.selection.has(c.id));
+  if (!selected.length) return;
+  const earliest = Math.min(...selected.map(c => c.startTime));
+  state.clipboard = selected.map(c => ({
+    fileId:      c.fileId,
+    layerId:     c.layerId,
+    relTime:     c.startTime - earliest,
+    duration:    c.duration,
+    trimStart:   c.trimStart,
+    layerOffset: layerIndex(c.layerId),
+  }));
+  setStatus(`Copied ${selected.length} clip(s)`);
+}
+
+function cutSelected() {
+  copySelected();
+  const ids = [...state.selection];
+  deselectAll();
+  for (const id of ids) removeClip(id);
+  setStatus(`Cut ${ids.length} clip(s)`);
+}
+
+function pasteClips() {
+  if (!state.clipboard.length) return;
+  const pasteAt = engine.playhead;
+  deselectAll();
+  for (const snap of state.clipboard) {
+    const layer = state.layers.find(l => l.id === snap.layerId)
+      || state.layers[Math.min(snap.layerOffset, state.layers.length - 1)]
+      || state.layers[0];
+    if (!layer || !state.files.has(snap.fileId)) continue;
+    const clip = addClip(snap.fileId, layer.id, pasteAt + snap.relTime, snap.duration);
+    if (clip) { clip.trimStart = snap.trimStart; selectClip(clip.id, true); }
+  }
+  updateSelectionStatus();
+  setStatus(`Pasted ${state.clipboard.length} clip(s)`);
+}
+
+function deleteSelected() {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  deselectAll();
+  for (const id of ids) removeClip(id);
+  setStatus(`Deleted ${ids.length} clip(s)`);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TRANSPORT
+   ═══════════════════════════════════════════════════════════ */
+
+function initTransport() {
+  document.getElementById('btnPlay').addEventListener('click', () => {
+    if (engine.playing) { engine.pause(); setPlayState(false); }
+    else {
+      if (!state.clips.length) { setStatus('Add some clips first!'); return; }
+      engine.play(); setPlayState(true);
+    }
+  });
+  document.getElementById('btnStop').addEventListener('click', () => {
+    engine.stop(); setPlayState(false);
+  });
+  document.getElementById('btnRestart').addEventListener('click', () => {
+    const was = engine.playing;
+    engine.stop(); setPlayState(false);
+    if (was) { engine.play(); setPlayState(true); }
+  });
+
+  document.getElementById('masterVol').addEventListener('input', e => {
+    engine.setMasterVolume(+e.target.value);
+    document.getElementById('masterVolVal').textContent = e.target.value + '%';
+  });
+
+  engine.onTick = sec => { updateTimeDisplay(sec); drawPlayhead(sec); };
+  engine.onEnd  = ()  => setPlayState(false);
+}
+
+function setPlayState(playing) {
+  const btn  = document.getElementById('btnPlay');
+  btn.querySelector('.icon-play').style.display  = playing ? 'none' : '';
+  btn.querySelector('.icon-pause').style.display = playing ? '' : 'none';
+  btn.classList.toggle('playing', playing);
+}
+
+function updateTimeDisplay(sec) {
+  const m  = Math.floor(sec / 60).toString().padStart(2, '0');
+  const s  = Math.floor(sec % 60).toString().padStart(2, '0');
+  const ms = Math.floor((sec % 1) * 1000).toString().padStart(3, '0');
+  document.getElementById('timeMin').textContent = m;
+  document.getElementById('timeSec').textContent = s;
+  document.getElementById('timeMs').textContent  = ms;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+   ═══════════════════════════════════════════════════════════ */
+
+function initKeyboard() {
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    const ctrl = e.ctrlKey || e.metaKey;
+
+    switch (true) {
+      case e.code === 'Space':
+        e.preventDefault();
+        document.getElementById('btnPlay').click();
+        break;
+      case e.code === 'Escape':
+        engine.stop(); setPlayState(false);
+        break;
+      case e.code === 'Home':
+        e.preventDefault();
+        document.getElementById('btnRestart').click();
+        break;
+      case ctrl && e.key === 's':
+        e.preventDefault(); saveProject();
+        break;
+      case ctrl && e.key === 'a':
+        e.preventDefault(); selectAll();
+        break;
+      case ctrl && e.key === 'c':
+        e.preventDefault(); copySelected();
+        break;
+      case ctrl && e.key === 'x':
+        e.preventDefault(); cutSelected();
+        break;
+      case ctrl && e.key === 'v':
+        e.preventDefault(); pasteClips();
+        break;
+      case ctrl && e.key === 'z':
+        e.preventDefault(); setStatus('Undo not yet implemented');
+        break;
+      case e.key === 'Delete' || e.key === 'Backspace':
+        e.preventDefault(); deleteSelected();
+        break;
+      case e.key === '+' || e.key === '=':
+        if (ctrl) { e.preventDefault(); setZoom(zoomIdx + 1); }
+        break;
+      case e.key === '-':
+        if (ctrl) { e.preventDefault(); setZoom(zoomIdx - 1); }
+        break;
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CONTEXT MENU
+   ═══════════════════════════════════════════════════════════ */
+
+function showCtxMenu(x, y, context) {
+  const menu = document.getElementById('ctxMenu');
+  const paste = document.getElementById('ctxPaste');
+  paste.disabled = !state.clipboard.length;
+
+  menu.removeAttribute('hidden');
+  // Keep within viewport
+  const mw = 170, mh = 140;
+  menu.style.left = Math.min(x, window.innerWidth  - mw) + 'px';
+  menu.style.top  = Math.min(y, window.innerHeight - mh) + 'px';
+
+  // Bind action once
+  const handler = e => {
+    const action = e.target.closest('[data-action]')?.dataset.action;
+    if (!action) return;
+    hideCtxMenu();
+    if (action === 'cut')    cutSelected();
+    else if (action === 'copy')   copySelected();
+    else if (action === 'paste')  pasteClips();
+    else if (action === 'delete') deleteSelected();
+  };
+  menu.addEventListener('click', handler, { once: true });
+}
+
+function hideCtxMenu() {
+  document.getElementById('ctxMenu').setAttribute('hidden', '');
+}
+
+document.addEventListener('click',       hideCtxMenu);
+document.addEventListener('contextmenu', e => { if (!e.target.closest('.clip')) hideCtxMenu(); });
+
+/* ═══════════════════════════════════════════════════════════
+   SAVE & EXPORT
+   ═══════════════════════════════════════════════════════════ */
+
+function initSaveExport() {
+  document.getElementById('btnSave').addEventListener('click', saveProject);
+  document.getElementById('btnExport').addEventListener('click', exportWav);
+}
+
+function saveProject() {
+  if (!state.clips.length) { setStatus('Nothing to save.'); return; }
+  const name = document.getElementById('projectName').value || 'Untitled';
+  const key  = 'project_' + Date.now();
+  const data = {
+    name, savedAt: Date.now(),
+    tracks: state.clips.length,
+    layers: state.layers.map(l => ({ id: l.id, name: l.name, color: l.color })),
+  };
+  const save = fn => { try { fn(); setStatus('Project saved.'); state.dirty = false; } catch (_) {} };
+  if (typeof chrome !== 'undefined' && chrome.storage)
+    chrome.storage.local.set({ [key]: data }, () => { setStatus('Project saved.'); state.dirty = false; });
+  else save(() => localStorage.setItem(key, JSON.stringify(data)));
+}
+
+async function exportWav() {
+  if (!state.clips.length) { setStatus('No clips to export.'); return; }
+  const modal    = document.getElementById('exportModal');
+  const progress = document.getElementById('exportProgressBar');
+  const statusTx = document.getElementById('exportStatusText');
+  modal.removeAttribute('hidden');
+
+  const wasPlaying = engine.playing;
+  if (wasPlaying) { engine.pause(); setPlayState(false); }
+
+  try {
+    progress.style.width = '0%';
+    statusTx.textContent = 'Rendering audio…';
+    const blob = await engine.exportWav(pct => {
+      progress.style.width = pct + '%';
+      if (pct >= 80) statusTx.textContent = 'Encoding WAV…';
+    });
+    const name = (document.getElementById('projectName').value || 'mashroom-mix')
+      .replace(/[^a-z0-9_\-\s]/gi, '_');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name + '.wav'; a.click();
+    URL.revokeObjectURL(url);
+    setStatus('Export complete!');
+  } catch (err) {
+    statusTx.textContent = 'Export failed: ' + err.message;
+    console.error(err);
+  } finally {
+    setTimeout(() => modal.setAttribute('hidden', ''), 1400);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STATUS BAR
+   ═══════════════════════════════════════════════════════════ */
+
+function setStatus(msg) {
+  const el = document.getElementById('statusMsg');
+  if (el) el.textContent = msg;
+}
+
+function updateStatusBar() {
+  const nL = state.layers.length;
+  const nC = state.clips.length;
+  const dur = engine.totalDuration();
+  const m = Math.floor(dur / 60);
+  const s = Math.floor(dur % 60).toString().padStart(2, '0');
+  document.getElementById('statLayers').textContent   = `${nL} layer${nL !== 1 ? 's' : ''}`;
+  document.getElementById('statClips').textContent    = `${nC} clip${nC !== 1 ? 's' : ''}`;
+  document.getElementById('statDuration').textContent = `${m}:${s}`;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GLOBAL DRAG-DROP  (external files dropped anywhere)
+   ═══════════════════════════════════════════════════════════ */
+
+function initGlobalDrop() {
+  const overlay = document.getElementById('dropOverlay');
+  let depth = 0;
+
+  document.addEventListener('dragenter', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    depth++;
+    overlay.classList.add('active');
+  });
+  document.addEventListener('dragleave', () => {
+    if (--depth <= 0) { depth = 0; overlay.classList.remove('active'); }
+  });
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    depth = 0; overlay.classList.remove('active');
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) importFiles(files);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PROJECT NAME  (dirty flag)
+   ═══════════════════════════════════════════════════════════ */
+
+function initProjectName() {
+  document.getElementById('projectName').addEventListener('input', () => { state.dirty = true; });
+  window.addEventListener('beforeunload', e => {
+    if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   INIT
+   ═══════════════════════════════════════════════════════════ */
+
+document.addEventListener('DOMContentLoaded', () => {
+  initTimeline();
+  initFilePanel();
+  initLayers();
+  initTransport();
+  initKeyboard();
+  initSaveExport();
+  initGlobalDrop();
+  initProjectName();
+
+  // Start with 2 default layers
+  addLayer('Layer 1');
+  addLayer('Layer 2');
+
+  setStatus('Ready — import audio files and drag them onto the timeline layers');
+});

@@ -427,5 +427,520 @@ function drawMiniWaveform(canvas, peaks, color) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   (UI code continues in subsequent chunks…)
+   PROJECT FILE PANEL  (left sidebar)
+   ═══════════════════════════════════════════════════════════ */
+
+let colorIdx = 0;
+function nextColor() { return LAYER_COLORS[colorIdx++ % LAYER_COLORS.length]; }
+
+function initFilePanel() {
+  const btnImport = document.getElementById('btnImport');
+  const fileInput = document.getElementById('fileInput');
+
+  btnImport.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) importFiles(Array.from(fileInput.files));
+    fileInput.value = '';
+  });
+
+  // Drop files onto the panel itself
+  const panel = document.getElementById('fpFiles');
+  panel.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  panel.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) importFiles(files);
+  });
+}
+
+async function importFiles(fileList) {
+  const audio = fileList.filter(f =>
+    f.type.startsWith('audio/') ||
+    /\.(mp3|wav|ogg|flac|aac|m4a|opus|webm)$/i.test(f.name)
+  );
+  if (!audio.length) { setStatus('No audio files found.'); return; }
+  setStatus(`Importing ${audio.length} file(s)…`);
+
+  for (const f of audio) {
+    try {
+      const buffer = await engine.decodeFile(f);
+      const name = f.name.replace(/\.[^.]+$/, '');
+      const color = nextColor();
+      const peaks = computePeaks(buffer);
+      const id = uid();
+      const entry = { id, name, buffer, duration: buffer.duration, color, peaks };
+      state.files.set(id, entry);
+      addFilePanelItem(entry);
+      state.dirty = true;
+    } catch (err) {
+      setStatus(`Failed: "${f.name}" – ${err.message}`);
+    }
+  }
+  document.getElementById('fpEmpty').style.display = state.files.size ? 'none' : '';
+  setStatus(`${state.files.size} file(s) in project. Drag to timeline →`);
+  updateStatusBar();
+}
+
+function addFilePanelItem(file) {
+  const el = document.createElement('div');
+  el.className = 'file-item';
+  el.dataset.fileId = file.id;
+  el.draggable = true;
+
+  const durM = Math.floor(file.duration / 60);
+  const durS = Math.floor(file.duration % 60).toString().padStart(2, '0');
+
+  el.innerHTML = `
+    <div class="file-item-top">
+      <div class="file-item-color" style="background:${file.color}"></div>
+      <div class="file-item-info">
+        <div class="file-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
+        <div class="file-item-dur">${durM}:${durS}</div>
+      </div>
+      <button class="file-item-del" title="Remove from project">
+        <svg viewBox="0 0 12 12" fill="currentColor" width="10" height="10">
+          <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="file-item-wave"><canvas></canvas></div>
+    <div class="file-item-drag-hint">
+      <svg viewBox="0 0 10 10" fill="currentColor" width="8" height="8"><path d="M2 3h6M2 5h6M2 7h6" stroke="currentColor" stroke-width="0.8"/></svg>
+      Drag to timeline
+    </div>
+  `;
+
+  // Mini waveform
+  const canvas = el.querySelector('canvas');
+  requestAnimationFrame(() => drawMiniWaveform(canvas, file.peaks, file.color));
+
+  // Drag start → sets file id for timeline drop
+  el.addEventListener('dragstart', e => {
+    e.dataTransfer.setData('text/x-mashroom-file', String(file.id));
+    e.dataTransfer.effectAllowed = 'copy';
+    el.classList.add('dragging');
+  });
+  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+
+  // Delete file from project
+  el.querySelector('.file-item-del').addEventListener('click', e => {
+    e.stopPropagation();
+    // Check if any clips use this file
+    const used = state.clips.filter(c => c.fileId === file.id);
+    if (used.length && !confirm(`"${file.name}" is used in ${used.length} clip(s). Remove anyway?`)) return;
+    // Remove clips that reference it
+    for (const c of used) removeClip(c.id);
+    state.files.delete(file.id);
+    el.remove();
+    document.getElementById('fpEmpty').style.display = state.files.size ? 'none' : '';
+    state.dirty = true;
+    updateStatusBar();
+  });
+
+  // Click → play preview
+  el.addEventListener('dblclick', () => {
+    engine.ensure();
+    const src = engine.ctx.createBufferSource();
+    src.buffer = file.buffer;
+    src.connect(engine.masterGain);
+    src.start();
+    setStatus(`Previewing "${file.name}"…`);
+  });
+
+  document.getElementById('fpFiles').appendChild(el);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TIMELINE INIT  (ruler, scroll sync, resize)
+   ═══════════════════════════════════════════════════════════ */
+
+let tlScrollArea, tlContent, tlLayerHeaders, tlRulerWrap, tlRulerCanvas, tlPlayhead;
+
+function initTimeline() {
+  tlScrollArea  = document.getElementById('tlScrollArea');
+  tlContent     = document.getElementById('tlContent');
+  tlLayerHeaders = document.getElementById('tlLayerHeaders');
+  tlRulerWrap   = document.getElementById('tlRulerWrap');
+  tlRulerCanvas = document.getElementById('tlRuler');
+  tlPlayhead    = document.getElementById('tlPlayhead');
+
+  // Scroll sync: ruler + layer headers track the scroll area
+  tlScrollArea.addEventListener('scroll', syncScroll);
+
+  // Click ruler to seek
+  tlRulerCanvas.addEventListener('click', e => {
+    const rect = tlRulerWrap.getBoundingClientRect();
+    const x = e.clientX - rect.left + tlScrollArea.scrollLeft;
+    engine.seek(Math.max(0, x / pxPerSec));
+  });
+
+  // Click empty timeline area to deselect / seek
+  tlScrollArea.addEventListener('mousedown', onTimelineMouseDown);
+
+  // Drop files from project panel onto timeline
+  tlScrollArea.addEventListener('dragover', onTimelineDragOver);
+  tlScrollArea.addEventListener('dragleave', onTimelineDragLeave);
+  tlScrollArea.addEventListener('drop', onTimelineDrop);
+
+  // Zoom buttons
+  document.getElementById('btnZoomIn').addEventListener('click', () => setZoom(zoomIdx + 1));
+  document.getElementById('btnZoomOut').addEventListener('click', () => setZoom(zoomIdx - 1));
+
+  // Snap toggle
+  const snapBtn = document.getElementById('btnSnap');
+  snapBtn.addEventListener('click', () => {
+    snapEnabled = !snapEnabled;
+    snapBtn.dataset.active = snapEnabled;
+  });
+
+  // Resize observer to re-draw ruler on window resize
+  new ResizeObserver(() => { drawRuler(); resizePlayhead(); }).observe(tlScrollArea);
+
+  drawRuler();
+  resizePlayhead();
+}
+
+function syncScroll() {
+  // Horizontal: translate ruler canvas to match content scroll
+  tlRulerCanvas.style.transform = `translateX(${-tlScrollArea.scrollLeft}px)`;
+  // Vertical: sync layer headers
+  tlLayerHeaders.scrollTop = tlScrollArea.scrollTop;
+}
+
+function contentWidth() {
+  const minW = tlScrollArea.clientWidth || 800;
+  return Math.max(engine.totalDuration() * pxPerSec + 400, minW);
+}
+
+function contentHeight() {
+  return Math.max(state.layers.length * LAYER_H, tlScrollArea.clientHeight || 200);
+}
+
+function updateContentSize() {
+  const w = contentWidth();
+  const h = contentHeight();
+  tlContent.style.width = w + 'px';
+  tlContent.style.height = h + 'px';
+  drawRuler();
+  resizePlayhead();
+}
+
+/* ── Ruler drawing ── */
+
+function drawRuler() {
+  const w = contentWidth();
+  const dpr = window.devicePixelRatio || 1;
+  tlRulerCanvas.width = w * dpr;
+  tlRulerCanvas.height = RULER_H * dpr;
+  tlRulerCanvas.style.width = w + 'px';
+  tlRulerCanvas.style.height = RULER_H + 'px';
+
+  const ctx = tlRulerCanvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, RULER_H);
+  ctx.fillStyle = '#1E1E1E';
+  ctx.fillRect(0, 0, w, RULER_H);
+
+  const totalSec = w / pxPerSec;
+  const secInterval = pxPerSec >= 80 ? 5 : pxPerSec >= 40 ? 10 : 30;
+
+  // Time labels + major ticks
+  ctx.font = '9px -apple-system, monospace';
+  ctx.fillStyle = '#666';
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+
+  for (let s = 0; s <= totalSec; s += secInterval) {
+    const x = s * pxPerSec;
+    ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, RULER_H); ctx.stroke();
+    const m = Math.floor(s / 60);
+    const sec = (s % 60).toString().padStart(2, '0');
+    ctx.fillText(`${m}:${sec}`, x + 3, 12);
+  }
+
+  // Beat ticks (lighter)
+  const bpm = getBpm();
+  const beatSec = 60 / bpm;
+  ctx.strokeStyle = '#272727';
+  for (let s = 0; s <= totalSec; s += beatSec) {
+    const x = s * pxPerSec;
+    ctx.beginPath(); ctx.moveTo(x, 22); ctx.lineTo(x, RULER_H); ctx.stroke();
+  }
+
+  // Apply scroll offset
+  tlRulerCanvas.style.transform = `translateX(${-tlScrollArea.scrollLeft}px)`;
+}
+
+/* ── Playhead canvas ── */
+
+function resizePlayhead() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = contentWidth();
+  const h = contentHeight();
+  tlPlayhead.width = w * dpr;
+  tlPlayhead.height = h * dpr;
+  tlPlayhead.style.width = w + 'px';
+  tlPlayhead.style.height = h + 'px';
+  drawPlayhead(engine.playhead);
+}
+
+function drawPlayhead(sec) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = parseFloat(tlPlayhead.style.width) || 0;
+  const h = parseFloat(tlPlayhead.style.height) || 0;
+  const ctx = tlPlayhead.getContext('2d');
+  ctx.clearRect(0, 0, tlPlayhead.width, tlPlayhead.height);
+  ctx.save();
+  ctx.scale(dpr, dpr);
+
+  const x = sec * pxPerSec;
+  if (x < 0 || x > w) { ctx.restore(); return; }
+
+  // Vertical line
+  ctx.strokeStyle = '#FF4444';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = 'rgba(255,68,68,0.5)';
+  ctx.shadowBlur = 4;
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+
+  // Triangle at top
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#FF4444';
+  ctx.beginPath(); ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 7); ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+
+  // Auto-scroll to keep playhead visible during playback
+  if (engine.playing) {
+    const vis = tlScrollArea.clientWidth;
+    const sl = tlScrollArea.scrollLeft;
+    if (x < sl || x > sl + vis - 60) {
+      tlScrollArea.scrollLeft = x - vis * 0.2;
+    }
+  }
+}
+
+/* ── Zoom ── */
+
+function setZoom(idx) {
+  idx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx));
+  zoomIdx = idx;
+  pxPerSec = PX_PER_SEC_BASE * ZOOM_LEVELS[idx];
+  document.getElementById('zoomLabel').textContent = ZOOM_LEVELS[idx] + '×';
+  updateContentSize();
+  refreshAllClips();
+  updateStatusBar();
+}
+
+/* ── Timeline drag-over (from file panel) ── */
+
+let _dropLayerIdx = -1;
+
+function onTimelineDragOver(e) {
+  // Only accept our custom file data
+  if (!e.dataTransfer.types.includes('text/x-mashroom-file')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+
+  // Highlight target layer
+  const rect = tlScrollArea.getBoundingClientRect();
+  const y = e.clientY - rect.top + tlScrollArea.scrollTop;
+  const idx = Math.min(state.layers.length - 1, Math.max(0, Math.floor(y / LAYER_H)));
+  if (idx !== _dropLayerIdx) {
+    clearDropHighlight();
+    _dropLayerIdx = idx;
+    const bg = tlContent.querySelector(`.layer-bg-row[data-layer-idx="${idx}"]`);
+    if (bg) bg.classList.add('drop-target');
+  }
+
+  // Hide empty message during drag
+  const em = document.getElementById('tlEmptyMsg');
+  if (em) em.style.display = 'none';
+}
+
+function onTimelineDragLeave(e) {
+  // Only clear if leaving the scroll area entirely
+  if (e.relatedTarget && tlScrollArea.contains(e.relatedTarget)) return;
+  clearDropHighlight();
+}
+
+function onTimelineDrop(e) {
+  e.preventDefault();
+  clearDropHighlight();
+
+  const fileId = Number(e.dataTransfer.getData('text/x-mashroom-file'));
+  if (!fileId || !state.files.has(fileId)) {
+    // Maybe external file drop → import
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) importFiles(files);
+    return;
+  }
+
+  const file = state.files.get(fileId);
+  const rect = tlScrollArea.getBoundingClientRect();
+  const x = e.clientX - rect.left + tlScrollArea.scrollLeft;
+  const y = e.clientY - rect.top + tlScrollArea.scrollTop;
+
+  let startTime = Math.max(0, x / pxPerSec);
+  if (snapEnabled) startTime = snap(startTime);
+
+  let layerIdx = Math.floor(y / LAYER_H);
+  layerIdx = Math.max(0, Math.min(state.layers.length - 1, layerIdx));
+  const layer = state.layers[layerIdx];
+  if (!layer) return;
+
+  addClip(fileId, layer.id, startTime, file.duration);
+  setStatus(`Added "${file.name}" to ${layer.name}`);
+}
+
+function clearDropHighlight() {
+  _dropLayerIdx = -1;
+  tlContent.querySelectorAll('.layer-bg-row.drop-target').forEach(el => el.classList.remove('drop-target'));
+  // Re-show empty message if no clips
+  const em = document.getElementById('tlEmptyMsg');
+  if (em) em.style.display = state.clips.length ? 'none' : '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LAYER MANAGEMENT
+   ═══════════════════════════════════════════════════════════ */
+
+function initLayers() {
+  document.getElementById('btnAddLayer').addEventListener('click', () => {
+    const n = state.layers.length + 1;
+    addLayer('Layer ' + n);
+  });
+}
+
+function addLayer(name) {
+  const id = uid();
+  const color = LAYER_COLORS[(state.layers.length) % LAYER_COLORS.length];
+  const layer = { id, name, color, muted: false, solo: false, volume: 0.8, pan: 0 };
+  state.layers.push(layer);
+  engine.createLayerNodes(layer);
+  renderLayerHeader(layer);
+  renderLayerBg(layer);
+  updateContentSize();
+  updateStatusBar();
+  state.dirty = true;
+  return layer;
+}
+
+function removeLayer(layerId) {
+  const idx = layerIndex(layerId);
+  if (idx === -1) return;
+  // Remove all clips on this layer
+  const layerClips = state.clips.filter(c => c.layerId === layerId);
+  for (const c of layerClips) removeClip(c.id);
+  // Remove audio nodes
+  engine.removeLayerNodes(layerId);
+  // Remove from state
+  state.layers.splice(idx, 1);
+  // Rebuild all layer headers + backgrounds (indices shifted)
+  rebuildLayerUI();
+  updateContentSize();
+  updateStatusBar();
+  state.dirty = true;
+}
+
+function renderLayerHeader(layer) {
+  const idx = layerIndex(layer.id);
+  const el = document.createElement('div');
+  el.className = 'layer-header';
+  el.dataset.layerId = layer.id;
+
+  el.innerHTML = `
+    <div class="layer-header-color-bar" style="background:${layer.color}"></div>
+    <div class="layer-header-body">
+      <div class="layer-header-top">
+        <input class="layer-name-input" type="text" value="${escapeHtml(layer.name)}" spellcheck="false">
+        <div class="layer-btns">
+          <button class="layer-btn layer-btn-mute" title="Mute">M</button>
+          <button class="layer-btn layer-btn-solo" title="Solo">S</button>
+          <button class="layer-btn layer-btn-del" title="Remove layer">
+            <svg viewBox="0 0 10 10" width="8" height="8"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="layer-header-bottom">
+        <div class="layer-vol-group">
+          <span class="layer-vol-label">VOL</span>
+          <input type="range" class="layer-vol-slider" min="0" max="100" value="${Math.round(layer.volume * 100)}">
+          <span class="layer-vol-val">${Math.round(layer.volume * 100)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Events
+  el.querySelector('.layer-name-input').addEventListener('input', e => {
+    layer.name = e.target.value;
+    state.dirty = true;
+  });
+
+  const btnMute = el.querySelector('.layer-btn-mute');
+  btnMute.addEventListener('click', () => {
+    layer.muted = !layer.muted;
+    btnMute.classList.toggle('active', layer.muted);
+    engine.setLayerMute(layer.id, layer.muted);
+    state.dirty = true;
+  });
+
+  const btnSolo = el.querySelector('.layer-btn-solo');
+  btnSolo.addEventListener('click', () => {
+    layer.solo = !layer.solo;
+    btnSolo.classList.toggle('active', layer.solo);
+    state.dirty = true;
+  });
+
+  el.querySelector('.layer-btn-del').addEventListener('click', () => {
+    if (state.layers.length <= 1) { setStatus('Need at least one layer.'); return; }
+    if (!confirm(`Delete "${layer.name}" and its clips?`)) return;
+    removeLayer(layer.id);
+  });
+
+  const volSlider = el.querySelector('.layer-vol-slider');
+  const volVal = el.querySelector('.layer-vol-val');
+  volSlider.addEventListener('input', () => {
+    const v = +volSlider.value / 100;
+    layer.volume = v;
+    volVal.textContent = volSlider.value;
+    engine.setLayerVolume(layer.id, layer.muted ? 0 : v);
+    state.dirty = true;
+  });
+
+  // Insert before the add-layer row
+  const addRow = document.getElementById('tlAddLayerRow');
+  tlLayerHeaders.insertBefore(el, addRow);
+}
+
+function renderLayerBg(layer) {
+  const idx = layerIndex(layer.id);
+  const bg = document.createElement('div');
+  bg.className = 'layer-bg-row';
+  bg.dataset.layerId = layer.id;
+  bg.dataset.layerIdx = idx;
+  bg.style.top = (idx * LAYER_H) + 'px';
+  bg.style.height = LAYER_H + 'px';
+  tlContent.insertBefore(bg, tlPlayhead);
+}
+
+function rebuildLayerUI() {
+  // Remove all existing headers (except add-layer row) and bg rows
+  tlLayerHeaders.querySelectorAll('.layer-header').forEach(el => el.remove());
+  tlContent.querySelectorAll('.layer-bg-row').forEach(el => el.remove());
+
+  for (const layer of state.layers) {
+    renderLayerHeader(layer);
+    renderLayerBg(layer);
+  }
+
+  // Re-position all clip elements (layer indices may have shifted)
+  refreshAllClips();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   (Clip management, selection, clipboard, transport, keyboard,
+    context menu, status, drag-drop, init — next chunks…)
    ═══════════════════════════════════════════════════════════ */

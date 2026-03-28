@@ -575,6 +575,13 @@ function initTimeline() {
     engine.seek(Math.max(0, x / pxPerSec));
   });
 
+  // Ctrl+Wheel → zoom in/out
+  document.querySelector('.timeline-panel').addEventListener('wheel', e => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setZoom(zoomIdx + (e.deltaY < 0 ? 1 : -1));
+  }, { passive: false });
+
   // Click empty timeline area to deselect / seek
   tlScrollArea.addEventListener('mousedown', onTimelineMouseDown);
 
@@ -626,6 +633,53 @@ function updateContentSize() {
   resizePlayhead();
 }
 
+/* ── Ruler tick presets ──
+   Each preset defines major (labelled), minor and micro tick intervals
+   in seconds. The first preset where  major * pxPerSec >= MIN_LABEL_PX
+   is chosen, giving finer detail as the user zooms in.            */
+
+const TICK_PRESETS = [
+  { major: 0.1,  minor: null,  micro: null  },
+  { major: 0.25, minor: 0.05,  micro: null  },
+  { major: 0.5,  minor: 0.1,   micro: null  },
+  { major: 1,    minor: 0.25,  micro: 0.1   },
+  { major: 2,    minor: 0.5,   micro: 0.1   },
+  { major: 5,    minor: 1,     micro: 0.25  },
+  { major: 10,   minor: 2,     micro: 0.5   },
+  { major: 30,   minor: 5,     micro: 1     },
+  { major: 60,   minor: 15,    micro: 5     },
+  { major: 120,  minor: 30,    micro: 10    },
+  { major: 300,  minor: 60,    micro: 15    },
+  { major: 600,  minor: 120,   micro: 30    },
+];
+const MIN_LABEL_PX = 65;
+
+function getTickPreset() {
+  return TICK_PRESETS.find(p => p.major * pxPerSec >= MIN_LABEL_PX)
+    || TICK_PRESETS[TICK_PRESETS.length - 1];
+}
+
+/** Format a ruler timestamp. Shows sub-second precision when interval < 1s. */
+function formatRulerTime(sec, majorInterval) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  if (majorInterval < 1) {
+    const ms = Math.round((sec % 1) * 1000);
+    return `${m}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+  }
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Iterate tick positions without floating-point drift by working in
+ *  integer milliseconds internally.                                  */
+function* tickPositions(intervalSec, totalSec) {
+  const stepMs = Math.round(intervalSec * 1000);
+  if (stepMs <= 0) return;
+  for (let ms = 0; ms / 1000 <= totalSec + 0.0001; ms += stepMs) {
+    yield ms / 1000;
+  }
+}
+
 /* ── Ruler drawing ── */
 
 function drawRuler() {
@@ -638,34 +692,61 @@ function drawRuler() {
 
   const ctx = tlRulerCanvas.getContext('2d');
   ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, RULER_H);
   ctx.fillStyle = '#1E1E1E';
   ctx.fillRect(0, 0, w, RULER_H);
 
   const totalSec = w / pxPerSec;
-  const secInterval = pxPerSec >= 80 ? 5 : pxPerSec >= 40 ? 10 : 30;
+  const preset   = getTickPreset();
+  ctx.lineWidth  = 1;
 
-  // Time labels + major ticks
-  ctx.font = '9px -apple-system, monospace';
-  ctx.fillStyle = '#666';
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1;
-
-  for (let s = 0; s <= totalSec; s += secInterval) {
-    const x = s * pxPerSec;
-    ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, RULER_H); ctx.stroke();
-    const m = Math.floor(s / 60);
-    const sec = (s % 60).toString().padStart(2, '0');
-    ctx.fillText(`${m}:${sec}`, x + 3, 12);
+  // ── Micro ticks  (very faint, shortest) ──
+  if (preset.micro && preset.micro * pxPerSec >= 3) {
+    ctx.strokeStyle = '#262626';
+    ctx.beginPath();
+    for (const s of tickPositions(preset.micro, totalSec)) {
+      const x = s * pxPerSec;
+      ctx.moveTo(x, 23); ctx.lineTo(x, RULER_H);
+    }
+    ctx.stroke();
   }
 
-  // Beat ticks (lighter)
-  const bpm = getBpm();
-  const beatSec = 60 / bpm;
-  ctx.strokeStyle = '#272727';
-  for (let s = 0; s <= totalSec; s += beatSec) {
+  // ── Beat ticks  (faint purple-grey) ──
+  const beatSec = 60 / getBpm();
+  if (beatSec * pxPerSec >= 4) {
+    ctx.strokeStyle = '#2E2830';
+    ctx.beginPath();
+    for (const s of tickPositions(beatSec, totalSec)) {
+      const x = s * pxPerSec;
+      ctx.moveTo(x, 20); ctx.lineTo(x, RULER_H);
+    }
+    ctx.stroke();
+  }
+
+  // ── Minor ticks  (medium grey) ──
+  if (preset.minor && preset.minor * pxPerSec >= 4) {
+    ctx.strokeStyle = '#383838';
+    ctx.beginPath();
+    for (const s of tickPositions(preset.minor, totalSec)) {
+      const x = s * pxPerSec;
+      ctx.moveTo(x, 18); ctx.lineTo(x, RULER_H);
+    }
+    ctx.stroke();
+  }
+
+  // ── Major ticks + labels  (bright, tallest) ──
+  ctx.font        = '9px -apple-system, ui-monospace, monospace';
+  ctx.strokeStyle = '#555';
+  ctx.fillStyle   = '#888';
+  ctx.beginPath();
+  for (const s of tickPositions(preset.major, totalSec)) {
     const x = s * pxPerSec;
-    ctx.beginPath(); ctx.moveTo(x, 22); ctx.lineTo(x, RULER_H); ctx.stroke();
+    ctx.moveTo(x, 13); ctx.lineTo(x, RULER_H);
+  }
+  ctx.stroke();
+
+  for (const s of tickPositions(preset.major, totalSec)) {
+    const x = s * pxPerSec;
+    ctx.fillText(formatRulerTime(s, preset.major), x + 3, 10);
   }
 
   // Apply scroll offset

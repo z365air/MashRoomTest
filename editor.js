@@ -34,11 +34,12 @@ let zoomIdx = ZOOM_LEVELS.indexOf(1);   // default = 1×
 let snapEnabled = true;
 
 const state = {
-  files: new Map(),     // id → { id, name, buffer, duration, color, peaks }
-  layers: [],           // [{ id, name, color, muted, solo, volume, pan }]
-  clips: [],            // [{ id, fileId, layerId, startTime, duration, trimStart }]
-  selection: new Set(),  // clip ids
-  clipboard: [],         // [{ fileId, relTime, duration, trimStart, layerOffset }]
+  files: new Map(),       // id → { id, name, buffer, duration, color, peaks }
+  layers: [],             // [{ id, name, color, muted, solo, volume, pan }]
+  clips: [],              // [{ id, fileId, layerId, startTime, duration, trimStart }]
+  selection: new Set(),   // clip ids
+  clipboard: [],          // [{ fileId, relTime, duration, trimStart, layerOffset }]
+  activeLayerId: null,    // currently selected layer (for H-key range marking)
   dirty: false,
 };
 
@@ -51,6 +52,17 @@ const range = {
   inverted: false,   // true after Ctrl+I
   get active() { return this.start !== null && this.end !== null; },
 };
+
+/* ── Active layer ── */
+function setActiveLayer(layerId) {
+  state.activeLayerId = layerId;
+  document.querySelectorAll('.layer-header').forEach(el => {
+    el.classList.toggle('active', String(el.dataset.layerId) === String(layerId));
+  });
+  tlContent && tlContent.querySelectorAll('.layer-bg-row').forEach(el => {
+    el.classList.toggle('active', String(el.dataset.layerId) === String(layerId));
+  });
+}
 
 /* Helper: snap a time value to the grid */
 function snap(t) {
@@ -922,8 +934,9 @@ function addLayer(name) {
 function removeLayer(layerId) {
   const idx = layerIndex(layerId);
   if (idx === -1) return;
-  // Clear range if it was on this layer
+  // Clear range and active layer if they were on this layer
   if (range.layerId === layerId) clearRange();
+  if (state.activeLayerId === layerId) state.activeLayerId = null;
   // Remove all clips on this layer
   const layerClips = state.clips.filter(c => c.layerId === layerId);
   for (const c of layerClips) removeClip(c.id);
@@ -966,6 +979,12 @@ function renderLayerHeader(layer) {
       </div>
     </div>
   `;
+
+  // Clicking the header activates this layer
+  el.addEventListener('mousedown', e => {
+    if (e.target.closest('.layer-btn, .layer-vol-slider, .layer-name-input')) return;
+    setActiveLayer(layer.id);
+  });
 
   // Events
   el.querySelector('.layer-name-input').addEventListener('input', e => {
@@ -1017,6 +1036,10 @@ function renderLayerBg(layer) {
   bg.dataset.layerIdx = idx;
   bg.style.top = (idx * LAYER_H) + 'px';
   bg.style.height = LAYER_H + 'px';
+  // Clicking the bg row (empty space) activates the layer
+  bg.addEventListener('mousedown', () => setActiveLayer(layer.id));
+  // Keep active class in sync after rebuild
+  if (state.activeLayerId === layer.id) bg.classList.add('active');
   tlContent.insertBefore(bg, tlPlayhead);
 }
 
@@ -1145,6 +1168,9 @@ function attachClipInteractions(el, clip) {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
+
+    // Activate this clip's layer
+    setActiveLayer(clip.layerId);
 
     // Selection
     if (!e.shiftKey && !state.selection.has(clip.id)) deselectAll();
@@ -1495,19 +1521,12 @@ function onTimelineMouseDown(e) {
       !e.target.classList.contains('layer-bg-row')) return;
   if (e.button !== 0) return;
 
-  // ── Ctrl+Click → range selection ──
-  if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    const rect   = tlScrollArea.getBoundingClientRect();
-    const xInContent = e.clientX - rect.left + tlScrollArea.scrollLeft;
-    const yInContent = e.clientY - rect.top  + tlScrollArea.scrollTop;
-    const layerIdx   = Math.floor(yInContent / LAYER_H);
-    const layer      = state.layers[layerIdx];
-    if (!layer) return;
-    const time = xInContent / pxPerSec;
-    onLayerCtrlClick(layer.id, time);
-    return;
-  }
+  // Activate the layer that was clicked
+  const rect2 = tlScrollArea.getBoundingClientRect();
+  const yInContent = e.clientY - rect2.top + tlScrollArea.scrollTop;
+  const layerIdx = Math.floor(yInContent / LAYER_H);
+  const clickedLayer = state.layers[layerIdx];
+  if (clickedLayer) setActiveLayer(clickedLayer.id);
 
   deselectAll();
 
@@ -1703,6 +1722,14 @@ function initKeyboard() {
       case e.code === 'Escape':
         if (range.layerId) { clearRange(); setStatus('Range cleared'); }
         else { engine.stop(); setPlayState(false); }
+        break;
+      case e.key === 'h' || e.key === 'H':
+        e.preventDefault();
+        if (!state.activeLayerId) {
+          setStatus('Select a layer first — click a layer header or row');
+        } else {
+          onLayerCtrlClick(state.activeLayerId, engine.playhead);
+        }
         break;
       case e.code === 'Home':
         e.preventDefault();

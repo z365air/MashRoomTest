@@ -42,6 +42,16 @@ const state = {
   dirty: false,
 };
 
+/* Range selection state — one contiguous highlighted region on one layer */
+const range = {
+  layerId:  null,    // which layer the range is on
+  pending:  null,    // time of first Ctrl+Click (waiting for 2nd)
+  start:    null,    // confirmed range start (seconds)
+  end:      null,    // confirmed range end   (seconds)
+  inverted: false,   // true after Ctrl+I
+  get active() { return this.start !== null && this.end !== null; },
+};
+
 /* Helper: snap a time value to the grid */
 function snap(t) {
   if (!snapEnabled) return Math.max(0, t);
@@ -811,6 +821,7 @@ function setZoom(idx) {
   document.getElementById('zoomLabel').textContent = ZOOM_LEVELS[idx] + '×';
   updateContentSize();
   refreshAllClips();
+  _updateRangeVisual();
   updateStatusBar();
 }
 
@@ -911,6 +922,8 @@ function addLayer(name) {
 function removeLayer(layerId) {
   const idx = layerIndex(layerId);
   if (idx === -1) return;
+  // Clear range if it was on this layer
+  if (range.layerId === layerId) clearRange();
   // Remove all clips on this layer
   const layerClips = state.clips.filter(c => c.layerId === layerId);
   for (const c of layerClips) removeClip(c.id);
@@ -1019,6 +1032,7 @@ function rebuildLayerUI() {
 
   // Re-position all clip elements (layer indices may have shifted)
   refreshAllClips();
+  _updateRangeVisual();
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1238,10 +1252,262 @@ function attachClipInteractions(el, clip) {
 }
 
 /* Click on empty timeline background — deselect / marquee */
+/* ═══════════════════════════════════════════════════════════
+   RANGE SELECTION
+   ═══════════════════════════════════════════════════════════ */
+
+/** Handle Ctrl+Click on a layer: first click sets pending marker,
+ *  second click on the same layer finalises the range.           */
+function onLayerCtrlClick(layerId, time) {
+  if (range.pending === null || range.layerId !== layerId) {
+    // ── First click (or switching layer) ──
+    range.layerId  = layerId;
+    range.pending  = snapEnabled ? snap(time) : Math.max(0, time);
+    range.start    = null;
+    range.end      = null;
+    range.inverted = false;
+    _updateRangeVisual();
+    const name = state.layers.find(l => l.id === layerId)?.name || 'layer';
+    setStatus(`Range start: ${_fmtSec(range.pending)} on "${name}" — Ctrl+Click again to close range`);
+  } else {
+    // ── Second click: finalise ──
+    const t = snapEnabled ? snap(time) : Math.max(0, time);
+    const a = Math.min(range.pending, t);
+    const b = Math.max(range.pending, t);
+    if (b - a < 0.02) { clearRange(); setStatus('Range too small — cleared'); return; }
+    range.start   = a;
+    range.end     = b;
+    range.pending = null;
+    _updateRangeVisual();
+    setStatus(`Range: ${_fmtSec(a)} → ${_fmtSec(b)}  (${_fmtDur(b - a)})  ·  Ctrl+X cut · Ctrl+C copy · Ctrl+J new layer · Ctrl+I invert`);
+  }
+}
+
+function clearRange() {
+  range.layerId  = null;
+  range.pending  = null;
+  range.start    = null;
+  range.end      = null;
+  range.inverted = false;
+  tlContent.querySelectorAll('.range-highlight, .range-pending-marker').forEach(el => el.remove());
+}
+
+function _fmtSec(sec) {
+  const m = Math.floor(sec / 60), s = (sec % 60).toFixed(2).padStart(5, '0');
+  return `${m}:${s}`;
+}
+function _fmtDur(sec) {
+  if (sec < 60) return sec.toFixed(2) + 's';
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+/** Rebuild the range highlight / pending marker divs. */
+function _updateRangeVisual() {
+  tlContent.querySelectorAll('.range-highlight, .range-pending-marker').forEach(el => el.remove());
+  if (!range.layerId) return;
+
+  const idx = layerIndex(range.layerId);
+  if (idx === -1) return;
+  const top = idx * LAYER_H;
+
+  // Pending marker (thin vertical line)
+  if (range.pending !== null) {
+    const el = document.createElement('div');
+    el.className = 'range-pending-marker';
+    el.style.cssText = `left:${range.pending * pxPerSec}px;top:${top}px;height:${LAYER_H}px;`;
+    tlContent.insertBefore(el, tlPlayhead);
+  }
+
+  // Confirmed range highlight
+  if (range.active) {
+    const segments = range.inverted ? _invertedSegments() : [[range.start, range.end]];
+    for (const [s, e] of segments) {
+      const el = document.createElement('div');
+      el.className = 'range-highlight' + (range.inverted ? ' inverted' : '');
+      const left = s * pxPerSec, w = (e - s) * pxPerSec;
+      el.style.cssText = `left:${left}px;top:${top}px;width:${w}px;height:${LAYER_H}px;`;
+
+      // Duration label
+      const lbl = document.createElement('span');
+      lbl.className = 'range-highlight-label';
+      lbl.textContent = _fmtDur(e - s);
+      el.appendChild(lbl);
+
+      // Alt+drag → duplicate to new layer
+      el.addEventListener('mousedown', _onRangeHighlightMouseDown);
+
+      tlContent.insertBefore(el, tlPlayhead);
+    }
+  }
+}
+
+/** Returns [[s1,e1], [s2,e2]] for inverted selection on the layer. */
+function _invertedSegments() {
+  const layerClips = state.clips.filter(c => c.layerId === range.layerId);
+  const lo = layerClips.length
+    ? Math.min(...layerClips.map(c => c.startTime))
+    : 0;
+  const hi = layerClips.length
+    ? Math.max(...layerClips.map(c => c.startTime + c.duration))
+    : (engine.totalDuration() || 30);
+  const segs = [];
+  if (range.start > lo + 0.01) segs.push([lo, range.start]);
+  if (range.end   < hi - 0.01) segs.push([range.end, hi]);
+  return segs.length ? segs : [[lo, hi]];
+}
+
+/** Alt+drag on a range highlight → drag to create a new layer clone. */
+function _onRangeHighlightMouseDown(e) {
+  if (!e.altKey || e.button !== 0) return;
+  e.stopPropagation();
+  e.preventDefault();
+
+  // Show ghost
+  const ghost = document.createElement('div');
+  ghost.className = 'range-ghost';
+  const hlEl = e.currentTarget;
+  const rect  = hlEl.getBoundingClientRect();
+  ghost.style.cssText = `width:${hlEl.offsetWidth}px;height:${LAYER_H - 2}px;left:${rect.left}px;top:${rect.top}px;`;
+  document.body.appendChild(ghost);
+
+  const startY = e.clientY;
+
+  const onMove = e => {
+    ghost.style.top = (rect.top + e.clientY - startY) + 'px';
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup',   onUp);
+    ghost.remove();
+    // Only trigger if dragged more than a tiny bit
+    if (Math.abs(e.clientY - startY) > 6) duplicateRangeToNewLayer();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup',   onUp);
+}
+
+/* ── Range operations ── */
+
+/** Return clip "pieces" that overlap with the current range (or inverted segments). */
+function _rangeSegments() {
+  return range.inverted ? _invertedSegments() : [[range.start, range.end]];
+}
+
+function _getPiecesInSegments(segments) {
+  const pieces = [];
+  for (const [s, e] of segments) {
+    for (const clip of state.clips) {
+      if (clip.layerId !== range.layerId) continue;
+      const cs = clip.startTime, ce = cs + clip.duration;
+      if (cs >= e || ce <= s) continue;   // no overlap
+      const ps = Math.max(cs, s);
+      const pe = Math.min(ce, e);
+      pieces.push({
+        clip,
+        pieceStart:     ps,
+        pieceEnd:       pe,
+        pieceTrimStart: clip.trimStart + (ps - cs),
+        pieceDuration:  pe - ps,
+        relTime:        ps - s,           // relative to segment start
+      });
+    }
+  }
+  return pieces;
+}
+
+function copyRange() {
+  if (!range.active) return;
+  const segs   = _rangeSegments();
+  const pieces = _getPiecesInSegments(segs);
+  const refStart = segs[0][0];
+  state.clipboard = pieces.map(p => ({
+    fileId:      p.clip.fileId,
+    layerId:     p.clip.layerId,
+    relTime:     p.pieceStart - refStart,
+    duration:    p.pieceDuration,
+    trimStart:   p.pieceTrimStart,
+    layerOffset: layerIndex(p.clip.layerId),
+  }));
+  setStatus(`Copied range (${pieces.length} piece${pieces.length !== 1 ? 's' : ''})`);
+}
+
+function cutRange() {
+  if (!range.active) return;
+  copyRange();
+  _sliceOutSegments(_rangeSegments());
+  clearRange();
+  updateContentSize();
+  updateStatusBar();
+  state.dirty = true;
+  setStatus('Cut range');
+}
+
+/** Remove clip content within [segStart, segEnd], splitting clips at boundaries. */
+function _sliceOutSegments(segments) {
+  for (const [s, e] of segments) {
+    // Snapshot affected clips before we start modifying
+    const affected = state.clips.filter(c => {
+      if (c.layerId !== range.layerId) return false;
+      return c.startTime < e && c.startTime + c.duration > s;
+    }).map(c => ({ ...c }));   // shallow copy of data
+
+    for (const snap of affected) {
+      const cs = snap.startTime, ce = cs + snap.duration;
+      removeClip(snap.id);
+      // Left remnant (before range start)
+      if (cs < s) {
+        const c = addClip(snap.fileId, snap.layerId, cs, s - cs);
+        if (c) c.trimStart = snap.trimStart;
+      }
+      // Right remnant (after range end)
+      if (ce > e) {
+        const c = addClip(snap.fileId, snap.layerId, e, ce - e);
+        if (c) c.trimStart = snap.trimStart + (e - cs);
+      }
+    }
+  }
+}
+
+function duplicateRangeToNewLayer() {
+  if (!range.active) return;
+  const segs   = _rangeSegments();
+  const pieces = _getPiecesInSegments(segs);
+  if (!pieces.length) { setStatus('No clips in range to duplicate'); return; }
+  const newLayer = addLayer('Layer ' + (state.layers.length + 1));
+  for (const p of pieces) {
+    const c = addClip(p.clip.fileId, newLayer.id, p.pieceStart, p.pieceDuration);
+    if (c) c.trimStart = p.pieceTrimStart;
+  }
+  setStatus(`Created "${newLayer.name}" from range (${pieces.length} clip${pieces.length !== 1 ? 's' : ''})`);
+  state.dirty = true;
+}
+
+function invertRange() {
+  if (!range.active) return;
+  range.inverted = !range.inverted;
+  _updateRangeVisual();
+  setStatus(range.inverted ? 'Selection inverted' : 'Selection restored');
+}
+
 function onTimelineMouseDown(e) {
   if (e.target !== tlScrollArea && e.target !== tlContent &&
       !e.target.classList.contains('layer-bg-row')) return;
   if (e.button !== 0) return;
+
+  // ── Ctrl+Click → range selection ──
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const rect   = tlScrollArea.getBoundingClientRect();
+    const xInContent = e.clientX - rect.left + tlScrollArea.scrollLeft;
+    const yInContent = e.clientY - rect.top  + tlScrollArea.scrollTop;
+    const layerIdx   = Math.floor(yInContent / LAYER_H);
+    const layer      = state.layers[layerIdx];
+    if (!layer) return;
+    const time = xInContent / pxPerSec;
+    onLayerCtrlClick(layer.id, time);
+    return;
+  }
 
   deselectAll();
 
@@ -1435,7 +1701,8 @@ function initKeyboard() {
         document.getElementById('btnPlay').click();
         break;
       case e.code === 'Escape':
-        engine.stop(); setPlayState(false);
+        if (range.layerId) { clearRange(); setStatus('Range cleared'); }
+        else { engine.stop(); setPlayState(false); }
         break;
       case e.code === 'Home':
         e.preventDefault();
@@ -1448,10 +1715,18 @@ function initKeyboard() {
         e.preventDefault(); selectAll();
         break;
       case ctrl && e.key === 'c':
-        e.preventDefault(); copySelected();
+        e.preventDefault();
+        if (range.active) copyRange(); else copySelected();
         break;
       case ctrl && e.key === 'x':
-        e.preventDefault(); cutSelected();
+        e.preventDefault();
+        if (range.active) cutRange(); else cutSelected();
+        break;
+      case ctrl && e.key === 'j':
+        e.preventDefault(); duplicateRangeToNewLayer();
+        break;
+      case ctrl && e.key === 'i':
+        e.preventDefault(); invertRange();
         break;
       case ctrl && e.key === 'v':
         e.preventDefault(); pasteClips();

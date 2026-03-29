@@ -589,7 +589,7 @@ async function importFiles(fileList) {
       const buffer = await engine.decodeFile(f);
       const name = f.name.replace(/\.[^.]+$/, '');
       const color = nextColor();
-      const peaks = computePeaks(buffer);
+      const peaks = await computePeaks(buffer);
       const id = uid();
       const entry = { id, name, buffer, duration: buffer.duration, color, peaks };
       state.files.set(id, entry);

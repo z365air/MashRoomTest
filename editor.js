@@ -808,10 +808,15 @@ function* tickPositions(intervalSec, totalSec) {
 function drawRuler() {
   const w = contentWidth();
   const dpr = window.devicePixelRatio || 1;
-  tlRulerCanvas.width = w * dpr;
-  tlRulerCanvas.height = RULER_H * dpr;
-  tlRulerCanvas.style.width = w + 'px';
-  tlRulerCanvas.style.height = RULER_H + 'px';
+  const needW = Math.round(w * dpr);
+  const needH = Math.round(RULER_H * dpr);
+  // Only reallocate the bitmap when the size changes — same guard as drawPeaks.
+  if (tlRulerCanvas.width !== needW || tlRulerCanvas.height !== needH) {
+    tlRulerCanvas.width  = needW;
+    tlRulerCanvas.height = needH;
+    tlRulerCanvas.style.width  = w + 'px';
+    tlRulerCanvas.style.height = RULER_H + 'px';
+  }
 
   const ctx = tlRulerCanvas.getContext('2d');
   ctx.scale(dpr, dpr);
@@ -1285,6 +1290,7 @@ function refreshClipEl(clip) {
       trimStart: clip.trimStart,
       duration: clip.duration * (clip.playbackRate || 1),
       fileDuration: file.duration,
+      w: clipWidth(clip), h: LAYER_H - 2,
     }));
   }
   _refreshClipBadge(el, clip);

@@ -474,12 +474,44 @@ body { display: flex; flex-direction: column; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* Left-edge trim handle */
+.clip-trim-left {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 8px;
+  cursor: ew-resize; z-index: 3;
+  background: linear-gradient(to right, rgba(255,255,255,0.12), transparent);
+  border-radius: 3px 0 0 3px;
+}
+.clip-trim-left:hover { background: linear-gradient(to right, rgba(255,255,255,0.28), transparent); }
+
+/* Right-edge trim handle */
 .clip-resize-handle {
   position: absolute; right: 0; top: 0; bottom: 0; width: 8px;
   cursor: ew-resize; z-index: 3;
   background: linear-gradient(to left, rgba(255,255,255,0.12), transparent);
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  border-radius: 0 3px 3px 0;
 }
 .clip-resize-handle:hover { background: linear-gradient(to left, rgba(255,255,255,0.25), transparent); }
+
+/* Speed-stretch knob at bottom of right handle */
+.clip-speed-knob {
+  width: 8px; height: 16px; flex-shrink: 0;
+  background: rgba(255, 200, 60, 0.55);
+  border-radius: 3px 3px 0 0;
+  cursor: ew-resize; z-index: 4;
+  transition: background 0.12s;
+}
+.clip-speed-knob:hover { background: rgba(255, 200, 60, 0.9); }
+
+/* Speed badge shown on clip when playbackRate ≠ 1 */
+.clip-speed-badge {
+  position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+  font-size: 8.5px; font-weight: 700; letter-spacing: 0.3px;
+  color: rgba(255, 200, 60, 1);
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 3px; padding: 1px 4px;
+  pointer-events: none; z-index: 4; white-space: nowrap;
+}
 
 /* ════════════════════════════════════
    SELECTION MARQUEE

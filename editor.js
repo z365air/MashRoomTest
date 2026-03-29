@@ -1360,6 +1360,17 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file2   = state.files.get(clip.fileId);
+    const layer2  = state.layers.find(l => l.id === clip.layerId);
+    const canvas2 = el.querySelector('.clip-wave-canvas');
+    let _raf2 = null;
+    const redrawLeft = () => {
+      _raf2 = null;
+      if (file2 && layer2) drawPeaks(canvas2, file2.peaks, layer2.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file2.duration,
+      });
+    };
+
     const onMove = ev => {
       const rate = clip.playbackRate || 1;
       const dTimeline = (ev.clientX - startX) / pxPerSec;
@@ -1382,6 +1393,7 @@ function attachClipInteractions(el, clip) {
 
       el.style.left  = clipLeft(clip) + 'px';
       el.style.width = clipWidth(clip) + 'px';
+      if (!_raf2) _raf2 = requestAnimationFrame(redrawLeft);
     };
 
     const onUp = () => {
@@ -1414,12 +1426,24 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file3   = state.files.get(clip.fileId);
+    const layer3  = state.layers.find(l => l.id === clip.layerId);
+    const canvas3 = el.querySelector('.clip-wave-canvas');
+    let _raf3 = null;
+    const redrawRight = () => {
+      _raf3 = null;
+      if (file3 && layer3) drawPeaks(canvas3, file3.peaks, layer3.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file3.duration,
+      });
+    };
+
     const onMove = e => {
       const dx = e.clientX - startX;
       let newDur = Math.max(0.1, origDur + dx / pxPerSec);
       newDur = Math.min(newDur, maxDur);
       clip.duration = newDur;
       el.style.width = clipWidth(clip) + 'px';
+      if (!_raf3) _raf3 = requestAnimationFrame(redrawRight);
     };
 
     const onUp = () => {
@@ -1452,6 +1476,17 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file4   = state.files.get(clip.fileId);
+    const layer4  = state.layers.find(l => l.id === clip.layerId);
+    const canvas4 = el.querySelector('.clip-wave-canvas');
+    let _raf4 = null;
+    const redrawSpeed = () => {
+      _raf4 = null;
+      if (file4 && layer4) drawPeaks(canvas4, file4.peaks, layer4.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file4.duration,
+      });
+    };
+
     const onMove = e => {
       const dx = e.clientX - startX;
       const newDur  = Math.max(0.05, origDur + dx / pxPerSec);
@@ -1460,6 +1495,7 @@ function attachClipInteractions(el, clip) {
       clip.duration     = sourceDur / newRate;
       el.style.width = clipWidth(clip) + 'px';
       _refreshClipBadge(el, clip);
+      if (!_raf4) _raf4 = requestAnimationFrame(redrawSpeed);
     };
 
     const onUp = () => {

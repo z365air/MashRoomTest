@@ -467,6 +467,77 @@ body { display: flex; flex-direction: column; }
 }
 
 /* ════════════════════════════════════
+   RANGE HIGHLIGHT
+   ════════════════════════════════════ */
+
+/* Pending start marker — thin vertical line */
+.range-pending-marker {
+  position: absolute;
+  width: 2px;
+  background: rgba(255, 200, 60, 0.85);
+  pointer-events: none;
+  z-index: 16;
+  box-shadow: 0 0 6px rgba(255, 200, 60, 0.5);
+}
+.range-pending-marker::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 50%;
+  transform: translateX(-50%);
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 200, 60, 0.9);
+}
+
+/* Confirmed range highlight */
+.range-highlight {
+  position: absolute;
+  background: rgba(255, 200, 60, 0.18);
+  border: 1px solid rgba(255, 200, 60, 0.55);
+  border-top: 2px solid rgba(255, 200, 60, 0.8);
+  border-bottom: 2px solid rgba(255, 200, 60, 0.8);
+  pointer-events: auto;
+  z-index: 16;
+  cursor: default;
+}
+.range-highlight.inverted {
+  background: rgba(60, 180, 255, 0.15);
+  border-color: rgba(60, 180, 255, 0.5);
+  border-top-color: rgba(60, 180, 255, 0.75);
+  border-bottom-color: rgba(60, 180, 255, 0.75);
+}
+
+/* Duration label inside highlight */
+.range-highlight-label {
+  position: absolute;
+  top: 3px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 700;
+  color: rgba(255, 200, 60, 0.9);
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  padding: 1px 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  letter-spacing: 0.3px;
+}
+.range-highlight.inverted .range-highlight-label {
+  color: rgba(100, 200, 255, 0.9);
+}
+
+/* Ghost element shown during Alt+drag */
+.range-ghost {
+  position: fixed;
+  background: rgba(255, 200, 60, 0.25);
+  border: 1px dashed rgba(255, 200, 60, 0.7);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.8;
+}
+
+/* ════════════════════════════════════
    STATUS BAR
    ════════════════════════════════════ */
 .status-bar {

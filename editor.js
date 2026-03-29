@@ -43,6 +43,80 @@ const state = {
   dirty: false,
 };
 
+/* ── Undo / redo stacks ── */
+const undoStack = [];
+const redoStack = [];
+const MAX_UNDO  = 50;
+
+function _snapshot() {
+  return {
+    clips:         state.clips.map(c => ({ ...c })),
+    layers:        state.layers.map(l => ({ ...l })),
+    activeLayerId: state.activeLayerId,
+  };
+}
+
+function pushUndo() {
+  undoStack.push(_snapshot());
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0;
+  _updateUndoButtons();
+}
+
+function _commitUndo(snap) {
+  undoStack.push(snap);
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0;
+  _updateUndoButtons();
+}
+
+function applySnapshot(snapshot) {
+  if (engine.playing) { engine.stop(); setPlayState(false); }
+
+  state.clips         = snapshot.clips.map(c => ({ ...c }));
+  state.layers        = snapshot.layers.map(l => ({ ...l }));
+  state.activeLayerId = snapshot.activeLayerId;
+
+  // Re-sync audio engine layer nodes
+  engine.layerNodes.forEach((_, id) => engine.removeLayerNodes(id));
+  if (engine.ctx) {
+    for (const layer of state.layers) engine.createLayerNodes(layer);
+  }
+
+  // Clear range if its layer no longer exists
+  if (range.layerId && !state.layers.find(l => l.id === range.layerId)) clearRange();
+
+  deselectAll(true);
+  rebuildLayerUI();
+  updateContentSize();
+  updateStatusBar();
+  if (state.activeLayerId) setActiveLayer(state.activeLayerId);
+  state.dirty = true;
+}
+
+function undo() {
+  if (!undoStack.length) { setStatus('Nothing to undo'); return; }
+  redoStack.push(_snapshot());
+  applySnapshot(undoStack.pop());
+  _updateUndoButtons();
+  setStatus(`Undo  (${undoStack.length} step${undoStack.length !== 1 ? 's' : ''} remaining)`);
+}
+
+function redo() {
+  if (!redoStack.length) { setStatus('Nothing to redo'); return; }
+  undoStack.push(_snapshot());
+  applySnapshot(redoStack.pop());
+  _updateUndoButtons();
+  setStatus(`Redo  (${redoStack.length} step${redoStack.length !== 1 ? 's' : ''} remaining)`);
+}
+
+function _updateUndoButtons() {
+  const u = document.getElementById('btnUndo');
+  const r = document.getElementById('btnRedo');
+  if (u) u.disabled = !undoStack.length;
+  if (r) r.disabled = !redoStack.length;
+}
+
 /* Range selection state — one contiguous highlighted region on one layer */
 const range = {
   layerId:  null,    // which layer the range is on
@@ -142,6 +216,13 @@ const engine = {
     this.layerNodes.delete(layerId);
   },
 
+  /* Ensure every current layer has audio nodes (called before play, safe after undo) */
+  ensureLayerNodes() {
+    for (const layer of state.layers) {
+      if (!this.layerNodes.has(layer.id)) this.createLayerNodes(layer);
+    }
+  },
+
   setLayerVolume(layerId, v) {
     const n = this.layerNodes.get(layerId);
     if (n) n.gain.gain.value = v;
@@ -167,6 +248,7 @@ const engine = {
   play() {
     if (this.playing) return;
     this.ensure();
+    this.ensureLayerNodes();
     this._startOff = this.playhead;
     this._startCtx = this.ctx.currentTime;
     this.playing = true;
@@ -894,6 +976,7 @@ function onTimelineDrop(e) {
   const layer = state.layers[layerIdx];
   if (!layer) return;
 
+  pushUndo();
   addClip(fileId, layer.id, startTime, file.duration);
   setStatus(`Added "${file.name}" to ${layer.name}`);
 }
@@ -918,6 +1001,7 @@ function initLayers() {
 }
 
 function addLayer(name) {
+  pushUndo();
   const id = uid();
   const color = LAYER_COLORS[(state.layers.length) % LAYER_COLORS.length];
   const layer = { id, name, color, muted: false, solo: false, volume: 0.8, pan: 0 };
@@ -934,6 +1018,7 @@ function addLayer(name) {
 function removeLayer(layerId) {
   const idx = layerIndex(layerId);
   if (idx === -1) return;
+  pushUndo();
   // Clear range and active layer if they were on this layer
   if (range.layerId === layerId) clearRange();
   if (state.activeLayerId === layerId) state.activeLayerId = null;
@@ -1187,6 +1272,7 @@ function attachClipInteractions(el, clip) {
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
+    const preMovSnap = _snapshot();
 
     el.classList.add('dragging');
 
@@ -1224,6 +1310,7 @@ function attachClipInteractions(el, clip) {
       document.removeEventListener('mouseup',   onUp);
       el.classList.remove('dragging');
       if (moved) {
+        _commitUndo(preMovSnap);
         for (const s of snapshots) refreshClipEl(s.clip);
         updateContentSize();
         state.dirty = true;
@@ -1240,6 +1327,7 @@ function attachClipInteractions(el, clip) {
     e.stopPropagation();
     e.preventDefault();
 
+    const preResSnap = _snapshot();
     const origDur = clip.duration;
     const startX  = e.clientX;
     const file    = state.files.get(clip.fileId);
@@ -1259,6 +1347,7 @@ function attachClipInteractions(el, clip) {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup',   onUp);
       el.classList.remove('resizing');
+      if (clip.duration !== origDur) _commitUndo(preResSnap);
       refreshClipEl(clip);
       updateContentSize();
       state.dirty = true;
@@ -1460,6 +1549,7 @@ function copyRange() {
 
 function cutRange() {
   if (!range.active) return;
+  pushUndo();
   copyRange();
   _sliceOutSegments(_rangeSegments());
   clearRange();
@@ -1497,6 +1587,7 @@ function _sliceOutSegments(segments) {
 
 function duplicateRangeToNewLayer() {
   if (!range.active) return;
+  pushUndo();
   const segs   = _rangeSegments();
   const pieces = _getPiecesInSegments(segs);
   if (!pieces.length) { setStatus('No clips in range to duplicate'); return; }
@@ -1628,6 +1719,7 @@ function copySelected() {
 }
 
 function cutSelected() {
+  pushUndo();
   copySelected();
   const ids = [...state.selection];
   deselectAll();
@@ -1637,6 +1729,7 @@ function cutSelected() {
 
 function pasteClips() {
   if (!state.clipboard.length) return;
+  pushUndo();
   const pasteAt = engine.playhead;
   deselectAll();
   for (const snap of state.clipboard) {
@@ -1654,6 +1747,7 @@ function pasteClips() {
 function deleteSelected() {
   const ids = [...state.selection];
   if (!ids.length) return;
+  pushUndo();
   deselectAll();
   for (const id of ids) removeClip(id);
   setStatus(`Deleted ${ids.length} clip(s)`);
@@ -1758,8 +1852,11 @@ function initKeyboard() {
       case ctrl && e.key === 'v':
         e.preventDefault(); pasteClips();
         break;
-      case ctrl && e.key === 'z':
-        e.preventDefault(); setStatus('Undo not yet implemented');
+      case ctrl && e.key === 'z' && !e.shiftKey:
+        e.preventDefault(); undo();
+        break;
+      case ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey)):
+        e.preventDefault(); redo();
         break;
       case e.key === 'Delete' || e.key === 'Backspace':
         e.preventDefault(); deleteSelected();
@@ -1816,6 +1913,9 @@ document.addEventListener('contextmenu', e => { if (!e.target.closest('.clip')) 
 function initSaveExport() {
   document.getElementById('btnSave').addEventListener('click', saveProject);
   document.getElementById('btnExport').addEventListener('click', exportWav);
+  document.getElementById('btnUndo').addEventListener('click', undo);
+  document.getElementById('btnRedo').addEventListener('click', redo);
+  _updateUndoButtons();
 }
 
 function saveProject() {

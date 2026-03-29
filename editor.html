@@ -71,6 +71,16 @@
       <input type="range" id="masterVol" class="master-vol-slider" min="0" max="100" value="80" title="Master Volume">
       <span class="master-vol-val" id="masterVolVal">80%</span>
     </div>
+    <div class="undo-redo-group">
+      <button class="btn-action btn-undo" id="btnUndo" title="Undo (Ctrl+Z)" disabled>
+        <svg viewBox="0 0 20 20" fill="currentColor" width="13" height="13"><path d="M7.707 3.293a1 1 0 010 1.414L5.414 7H11a7 7 0 110 14 1 1 0 110-2 5 5 0 100-10H5.414l2.293 2.293a1 1 0 11-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"/></svg>
+        Undo
+      </button>
+      <button class="btn-action btn-redo" id="btnRedo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled>
+        Redo
+        <svg viewBox="0 0 20 20" fill="currentColor" width="13" height="13"><path d="M12.293 3.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 9H9a5 5 0 100 10 1 1 0 110 2 7 7 0 110-14h5.586l-2.293-2.293a1 1 0 010-1.414z"/></svg>
+      </button>
+    </div>
     <button class="btn-action btn-save" id="btnSave" title="Save (Ctrl+S)">
       <svg viewBox="0 0 20 20" fill="currentColor" width="13" height="13"><path d="M4 4v12h12V7.414L13.586 4H4zm8 0v4H8V4h4zM6 10h8v6H6v-6z"/></svg>
       Save

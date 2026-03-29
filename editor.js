@@ -318,8 +318,9 @@ const engine = {
       const clipEnd = clip.startTime + clip.duration;
       if (clipEnd <= offset) continue;   // already past
 
-      const clipOff = offset - clip.startTime;
-      const bufStart = clip.trimStart + Math.max(0, clipOff);
+      const rate     = clip.playbackRate || 1;
+      const clipOff  = offset - clip.startTime;
+      const bufStart = clip.trimStart + Math.max(0, clipOff) * rate;
       const remaining = clip.duration - Math.max(0, clipOff);
       if (remaining <= 0) continue;
 
@@ -329,6 +330,7 @@ const engine = {
 
       const src = this.ctx.createBufferSource();
       src.buffer = file.buffer;
+      src.playbackRate.value = rate;
       src.connect(nodes.gain);
       src.start(when, bufStart, remaining);
       this.sources.push(src);
@@ -1151,7 +1153,7 @@ function addClip(fileId, layerId, startTime, duration) {
   const file = state.files.get(fileId);
   if (!file) return null;
   const id = uid();
-  const clip = { id, fileId, layerId, startTime, duration: duration || file.duration, trimStart: 0 };
+  const clip = { id, fileId, layerId, startTime, duration: duration || file.duration, trimStart: 0, playbackRate: 1 };
   state.clips.push(clip);
   renderClip(clip);
   updateContentSize();
@@ -1202,7 +1204,11 @@ function renderClip(clip) {
     <div class="clip-label">
       <span class="clip-label-text">${escapeHtml(file.name)}</span>
     </div>
-    <div class="clip-resize-handle"></div>
+    <span class="clip-speed-badge" hidden></span>
+    <div class="clip-trim-left" title="Drag to trim start"></div>
+    <div class="clip-resize-handle" title="Drag to trim end">
+      <div class="clip-speed-knob" title="Drag to stretch / compress playback speed"></div>
+    </div>
   `;
 
   // Draw waveform
@@ -1210,13 +1216,26 @@ function renderClip(clip) {
     const canvas = el.querySelector('.clip-wave-canvas');
     drawPeaks(canvas, file.peaks, layer.color, {
       trimStart: clip.trimStart,
-      duration: clip.duration,
+      duration: clip.duration * (clip.playbackRate || 1),
       fileDuration: file.duration,
     });
   });
+  _refreshClipBadge(el, clip);
 
   attachClipInteractions(el, clip);
   tlContent.insertBefore(el, tlPlayhead);
+}
+
+function _refreshClipBadge(el, clip) {
+  const badge = el.querySelector('.clip-speed-badge');
+  if (!badge) return;
+  const rate = clip.playbackRate || 1;
+  if (Math.abs(rate - 1) < 0.005) {
+    badge.hidden = true;
+  } else {
+    badge.hidden = false;
+    badge.textContent = '×' + rate.toFixed(2);
+  }
 }
 
 function refreshClipEl(clip) {
@@ -1225,15 +1244,17 @@ function refreshClipEl(clip) {
   el.style.left  = clipLeft(clip)  + 'px';
   el.style.top   = clipTop(clip)   + 'px';
   el.style.width = clipWidth(clip) + 'px';
-  // Redraw waveform if size changed
   const file = state.files.get(clip.fileId);
   const layer = state.layers.find(l => l.id === clip.layerId);
   if (file && layer) {
     const canvas = el.querySelector('.clip-wave-canvas');
     requestAnimationFrame(() => drawPeaks(canvas, file.peaks, layer.color, {
-      trimStart: clip.trimStart, duration: clip.duration, fileDuration: file.duration,
+      trimStart: clip.trimStart,
+      duration: clip.duration * (clip.playbackRate || 1),
+      fileDuration: file.duration,
     }));
   }
+  _refreshClipBadge(el, clip);
 }
 
 function refreshAllClips() {
@@ -1249,7 +1270,8 @@ function attachClipInteractions(el, clip) {
 
   // ── Move drag ──
   el.addEventListener('mousedown', e => {
-    if (e.target === resizeHandle) return; // handled below
+    // Let resize/trim/speed handles handle their own mousedown
+    if (e.target.closest('.clip-resize-handle, .clip-trim-left, .clip-speed-knob')) return;
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
@@ -1321,17 +1343,73 @@ function attachClipInteractions(el, clip) {
     document.addEventListener('mouseup',   onUp);
   });
 
-  // ── Resize drag (right handle) ──
+  // ── Left-edge trim ──
+  const trimLeft = el.querySelector('.clip-trim-left');
+  trimLeft.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const preSnap        = _snapshot();
+    const origStart      = clip.startTime;
+    const origTrimStart  = clip.trimStart;
+    const rightEdge      = clip.startTime + clip.duration;
+    const startX         = e.clientX;
+    const file           = state.files.get(clip.fileId);
+
+    el.classList.add('resizing');
+
+    const onMove = ev => {
+      const rate = clip.playbackRate || 1;
+      const dTimeline = (ev.clientX - startX) / pxPerSec;
+
+      // How far left can we go? Until trimStart hits 0
+      const minDelta = -origTrimStart / rate;
+      // How far right can we go? Leave at least 0.1s of clip
+      const maxDelta = (rightEdge - origStart) - 0.1;
+
+      const delta = Math.max(minDelta, Math.min(maxDelta, dTimeline));
+
+      let newStart = origStart + delta;
+      if (snapEnabled) newStart = snap(newStart);
+      newStart = Math.max(0, newStart);
+
+      const actualDelta  = newStart - origStart;
+      clip.startTime     = newStart;
+      clip.trimStart     = Math.max(0, origTrimStart + actualDelta * rate);
+      clip.duration      = rightEdge - newStart;
+
+      el.style.left  = clipLeft(clip) + 'px';
+      el.style.width = clipWidth(clip) + 'px';
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      el.classList.remove('resizing');
+      if (clip.startTime !== origStart) _commitUndo(preSnap);
+      refreshClipEl(clip);
+      updateContentSize();
+      state.dirty = true;
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  // ── Right-edge trim ──
   resizeHandle.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
 
     const preResSnap = _snapshot();
-    const origDur = clip.duration;
-    const startX  = e.clientX;
-    const file    = state.files.get(clip.fileId);
-    const maxDur  = file ? file.duration - clip.trimStart : Infinity;
+    const origDur    = clip.duration;
+    const startX     = e.clientX;
+    const file       = state.files.get(clip.fileId);
+    const rate       = clip.playbackRate || 1;
+    // Maximum duration is the remaining audio content adjusted for speed
+    const maxDur     = file ? (file.duration - clip.trimStart) / rate : Infinity;
 
     el.classList.add('resizing');
 
@@ -1348,6 +1426,46 @@ function attachClipInteractions(el, clip) {
       document.removeEventListener('mouseup',   onUp);
       el.classList.remove('resizing');
       if (clip.duration !== origDur) _commitUndo(preResSnap);
+      refreshClipEl(clip);
+      updateContentSize();
+      state.dirty = true;
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  // ── Speed knob (bottom of right handle) — stretch / compress ──
+  const speedKnob = el.querySelector('.clip-speed-knob');
+  speedKnob.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const preKnobSnap  = _snapshot();
+    const origDur      = clip.duration;
+    const origRate     = clip.playbackRate || 1;
+    // Source audio content consumed at current state — stays constant during stretch
+    const sourceDur    = origDur * origRate;
+    const startX       = e.clientX;
+
+    el.classList.add('resizing');
+
+    const onMove = e => {
+      const dx = e.clientX - startX;
+      const newDur  = Math.max(0.05, origDur + dx / pxPerSec);
+      const newRate = Math.max(0.1, Math.min(10, sourceDur / newDur));
+      clip.playbackRate = newRate;
+      clip.duration     = sourceDur / newRate;
+      el.style.width = clipWidth(clip) + 'px';
+      _refreshClipBadge(el, clip);
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      el.classList.remove('resizing');
+      if (clip.playbackRate !== origRate) _commitUndo(preKnobSnap);
       refreshClipEl(clip);
       updateContentSize();
       state.dirty = true;

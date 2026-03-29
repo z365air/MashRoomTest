@@ -154,6 +154,12 @@ function layerIndex(layerId) {
   return state.layers.findIndex(l => l.id === layerId);
 }
 
+function _panLabel(v) {
+  const pct = Math.round(Math.abs(v) * 100);
+  if (pct === 0) return 'C';
+  return (v < 0 ? 'L' : 'R') + pct;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1064,13 +1070,18 @@ function renderLayerHeader(layer) {
           <input type="range" class="layer-vol-slider" min="0" max="100" value="${Math.round(layer.volume * 100)}">
           <span class="layer-vol-val">${Math.round(layer.volume * 100)}</span>
         </div>
+        <div class="layer-pan-group">
+          <span class="layer-pan-label">PAN</span>
+          <input type="range" class="layer-pan-slider" min="-100" max="100" value="${Math.round((layer.pan || 0) * 100)}" title="Double-click to reset to center">
+          <span class="layer-pan-val">${_panLabel(layer.pan || 0)}</span>
+        </div>
       </div>
     </div>
   `;
 
   // Clicking the header activates this layer
   el.addEventListener('mousedown', e => {
-    if (e.target.closest('.layer-btn, .layer-vol-slider, .layer-name-input')) return;
+    if (e.target.closest('.layer-btn, .layer-vol-slider, .layer-pan-slider, .layer-name-input')) return;
     setActiveLayer(layer.id);
   });
 
@@ -1108,6 +1119,23 @@ function renderLayerHeader(layer) {
     layer.volume = v;
     volVal.textContent = volSlider.value;
     engine.setLayerVolume(layer.id, layer.muted ? 0 : v);
+    state.dirty = true;
+  });
+
+  const panSlider = el.querySelector('.layer-pan-slider');
+  const panVal    = el.querySelector('.layer-pan-val');
+  panSlider.addEventListener('input', () => {
+    const v = +panSlider.value / 100;
+    layer.pan = v;
+    panVal.textContent = _panLabel(v);
+    engine.setLayerPan(layer.id, v);
+    state.dirty = true;
+  });
+  panSlider.addEventListener('dblclick', () => {
+    layer.pan = 0;
+    panSlider.value = 0;
+    panVal.textContent = _panLabel(0);
+    engine.setLayerPan(layer.id, 0);
     state.dirty = true;
   });
 
@@ -1360,6 +1388,17 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file2   = state.files.get(clip.fileId);
+    const layer2  = state.layers.find(l => l.id === clip.layerId);
+    const canvas2 = el.querySelector('.clip-wave-canvas');
+    let _raf2 = null;
+    const redrawLeft = () => {
+      _raf2 = null;
+      if (file2 && layer2) drawPeaks(canvas2, file2.peaks, layer2.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file2.duration,
+      });
+    };
+
     const onMove = ev => {
       const rate = clip.playbackRate || 1;
       const dTimeline = (ev.clientX - startX) / pxPerSec;
@@ -1382,6 +1421,7 @@ function attachClipInteractions(el, clip) {
 
       el.style.left  = clipLeft(clip) + 'px';
       el.style.width = clipWidth(clip) + 'px';
+      if (!_raf2) _raf2 = requestAnimationFrame(redrawLeft);
     };
 
     const onUp = () => {
@@ -1414,12 +1454,24 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file3   = state.files.get(clip.fileId);
+    const layer3  = state.layers.find(l => l.id === clip.layerId);
+    const canvas3 = el.querySelector('.clip-wave-canvas');
+    let _raf3 = null;
+    const redrawRight = () => {
+      _raf3 = null;
+      if (file3 && layer3) drawPeaks(canvas3, file3.peaks, layer3.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file3.duration,
+      });
+    };
+
     const onMove = e => {
       const dx = e.clientX - startX;
       let newDur = Math.max(0.1, origDur + dx / pxPerSec);
       newDur = Math.min(newDur, maxDur);
       clip.duration = newDur;
       el.style.width = clipWidth(clip) + 'px';
+      if (!_raf3) _raf3 = requestAnimationFrame(redrawRight);
     };
 
     const onUp = () => {
@@ -1452,6 +1504,17 @@ function attachClipInteractions(el, clip) {
 
     el.classList.add('resizing');
 
+    const file4   = state.files.get(clip.fileId);
+    const layer4  = state.layers.find(l => l.id === clip.layerId);
+    const canvas4 = el.querySelector('.clip-wave-canvas');
+    let _raf4 = null;
+    const redrawSpeed = () => {
+      _raf4 = null;
+      if (file4 && layer4) drawPeaks(canvas4, file4.peaks, layer4.color, {
+        trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file4.duration,
+      });
+    };
+
     const onMove = e => {
       const dx = e.clientX - startX;
       const newDur  = Math.max(0.05, origDur + dx / pxPerSec);
@@ -1460,6 +1523,7 @@ function attachClipInteractions(el, clip) {
       clip.duration     = sourceDur / newRate;
       el.style.width = clipWidth(clip) + 'px';
       _refreshClipBadge(el, clip);
+      if (!_raf4) _raf4 = requestAnimationFrame(redrawSpeed);
     };
 
     const onUp = () => {

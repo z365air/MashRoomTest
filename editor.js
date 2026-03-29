@@ -752,8 +752,8 @@ function updateContentSize() {
   const h = contentHeight();
   tlContent.style.width = w + 'px';
   tlContent.style.height = h + 'px';
-  drawRuler();
-  resizePlayhead();
+  drawRuler(w);
+  resizePlayhead(w, h);
 }
 
 /* ── Ruler tick presets ──
@@ -805,8 +805,8 @@ function* tickPositions(intervalSec, totalSec) {
 
 /* ── Ruler drawing ── */
 
-function drawRuler() {
-  const w = contentWidth();
+function drawRuler(w) {
+  if (w === undefined) w = contentWidth();
   const dpr = window.devicePixelRatio || 1;
   const needW = Math.round(w * dpr);
   const needH = Math.round(RULER_H * dpr);
@@ -871,14 +871,18 @@ function drawRuler() {
 
 /* ── Playhead canvas ── */
 
-function resizePlayhead() {
+function resizePlayhead(w, h) {
   const dpr = window.devicePixelRatio || 1;
-  const w = contentWidth();
-  const h = contentHeight();
-  tlPlayhead.width = w * dpr;
-  tlPlayhead.height = h * dpr;
-  tlPlayhead.style.width = w + 'px';
-  tlPlayhead.style.height = h + 'px';
+  if (w === undefined) w = contentWidth();
+  if (h === undefined) h = contentHeight();
+  const needW = Math.round(w * dpr);
+  const needH = Math.round(h * dpr);
+  if (tlPlayhead.width !== needW || tlPlayhead.height !== needH) {
+    tlPlayhead.width  = needW;
+    tlPlayhead.height = needH;
+    tlPlayhead.style.width  = w + 'px';
+    tlPlayhead.style.height = h + 'px';
+  }
   drawPlayhead(engine.playhead);
 }
 

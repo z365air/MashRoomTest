@@ -141,13 +141,7 @@ function setActiveLayer(layerId) {
 /* Helper: snap a time value to the grid */
 function snap(t) {
   if (!snapEnabled) return Math.max(0, t);
-  const grid = SNAP_SEC * (60 / (getBpm() || 120));   // beat-relative grid
   return Math.max(0, Math.round(t / SNAP_SEC) * SNAP_SEC);
-}
-
-function getBpm() {
-  const el = document.getElementById('bpmInput');
-  return el ? +el.value || 120 : 120;
 }
 
 function layerIndex(layerId) {
@@ -819,18 +813,6 @@ function drawRuler() {
     for (const s of tickPositions(preset.micro, totalSec)) {
       const x = s * pxPerSec;
       ctx.moveTo(x, 23); ctx.lineTo(x, RULER_H);
-    }
-    ctx.stroke();
-  }
-
-  // ── Beat ticks  (faint purple-grey) ──
-  const beatSec = 60 / getBpm();
-  if (beatSec * pxPerSec >= 4) {
-    ctx.strokeStyle = '#2E2830';
-    ctx.beginPath();
-    for (const s of tickPositions(beatSec, totalSec)) {
-      const x = s * pxPerSec;
-      ctx.moveTo(x, 20); ctx.lineTo(x, RULER_H);
     }
     ctx.stroke();
   }

@@ -391,6 +391,7 @@ const engine = {
 
       const src = offline.createBufferSource();
       src.buffer = file.buffer;
+      src.playbackRate.value = clip.playbackRate || 1;
       src.connect(dest);
       src.start(clip.startTime, clip.trimStart, clip.duration);
     }

@@ -332,7 +332,7 @@ const engine = {
       src.buffer = file.buffer;
       src.playbackRate.value = rate;
       src.connect(nodes.gain);
-      src.start(when, bufStart, remaining);
+      src.start(when, bufStart, remaining * rate);  // duration in buffer-time = wall-clock * rate
       this.sources.push(src);
     }
   },
@@ -393,7 +393,7 @@ const engine = {
       src.buffer = file.buffer;
       src.playbackRate.value = clip.playbackRate || 1;
       src.connect(dest);
-      src.start(clip.startTime, clip.trimStart, clip.duration);
+      src.start(clip.startTime, clip.trimStart, clip.duration * (clip.playbackRate || 1));
     }
 
     onProgress && onProgress(10);
@@ -449,20 +449,27 @@ function encodeWav(audioBuffer) {
    WAVEFORM PEAKS + RENDERING
    ═══════════════════════════════════════════════════════════ */
 
-/** Pre-compute peak data for fast drawing (once per file) */
-function computePeaks(audioBuffer, buckets) {
+/** Pre-compute peak data for fast drawing (once per file).
+ *  Runs in async chunks to avoid blocking the UI thread on long files. */
+async function computePeaks(audioBuffer, buckets) {
   buckets = buckets || WAVEFORM_BUCKETS;
   const data = audioBuffer.getChannelData(0);
   const step = Math.max(1, Math.ceil(data.length / buckets));
   const peaks = new Float32Array(buckets);
-  for (let i = 0; i < buckets; i++) {
-    let mx = 0;
-    const base = i * step;
-    for (let j = 0; j < step; j++) {
-      const val = Math.abs(data[base + j] || 0);
-      if (val > mx) mx = val;
+  const CHUNK = 80;  // buckets per slice before yielding
+  for (let i = 0; i < buckets; i += CHUNK) {
+    const end = Math.min(buckets, i + CHUNK);
+    for (let b = i; b < end; b++) {
+      let mx = 0;
+      const base = b * step;
+      for (let j = 0; j < step; j++) {
+        const val = Math.abs(data[base + j] || 0);
+        if (val > mx) mx = val;
+      }
+      peaks[b] = mx;
     }
-    peaks[i] = mx;
+    // Yield to the browser between chunks so the UI stays responsive
+    await new Promise(r => setTimeout(r, 0));
   }
   return peaks;
 }
@@ -1230,15 +1237,21 @@ function renderClip(clip) {
     </div>
   `;
 
-  // Draw waveform
-  requestAnimationFrame(() => {
+  // Draw waveform — retry until the canvas has been laid out (clientWidth > 0)
+  const _drawWhenReady = (attempts) => {
     const canvas = el.querySelector('.clip-wave-canvas');
+    if (!canvas) return;
+    if (canvas.clientWidth === 0 && attempts > 0) {
+      requestAnimationFrame(() => _drawWhenReady(attempts - 1));
+      return;
+    }
     drawPeaks(canvas, file.peaks, layer.color, {
       trimStart: clip.trimStart,
       duration: clip.duration * (clip.playbackRate || 1),
       fileDuration: file.duration,
     });
-  });
+  };
+  requestAnimationFrame(() => _drawWhenReady(5));
   _refreshClipBadge(el, clip);
 
   attachClipInteractions(el, clip);

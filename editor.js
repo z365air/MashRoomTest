@@ -479,10 +479,18 @@ function drawPeaks(canvas, peaks, color, opts) {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   if (w === 0 || h === 0) return;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
+
+  // Only reallocate the canvas bitmap when the size actually changes —
+  // resetting canvas.width/height destroys the GPU texture and is expensive.
+  const needW = Math.round(w * dpr);
+  const needH = Math.round(h * dpr);
+  if (canvas.width !== needW || canvas.height !== needH) {
+    canvas.width  = needW;
+    canvas.height = needH;
+  }
+
   const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);  // safe whether or not bitmap was reset
 
   // Optional background
   if (bg && bg !== 'transparent') {
@@ -1335,7 +1343,9 @@ function attachClipInteractions(el, clip) {
           cEl.style.setProperty('--clip-color', layer.color);
         }
       }
-      updateContentSize();
+      // Do NOT call updateContentSize() here — drawRuler() inside it
+      // is too expensive to run on every mousemove (causes freeze).
+      // Content size is updated correctly in onUp.
     };
 
     const onUp = () => {

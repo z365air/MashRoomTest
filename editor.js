@@ -481,10 +481,11 @@ async function computePeaks(audioBuffer, buckets) {
  *  @param {object} opts         – { trimStart, duration, fileDuration, bg }
  */
 function drawPeaks(canvas, peaks, color, opts) {
-  const { trimStart = 0, duration, fileDuration, bg = 'transparent' } = opts || {};
+  const { trimStart = 0, duration, fileDuration, bg = 'transparent', w: wHint, h: hHint } = opts || {};
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  // Use caller-supplied dimensions when available to avoid forced synchronous layout.
+  const w = wHint !== undefined ? wHint : canvas.clientWidth;
+  const h = hHint !== undefined ? hHint : canvas.clientHeight;
   if (w === 0 || h === 0) return;
 
   // Only reallocate the canvas bitmap when the size actually changes —
@@ -1401,6 +1402,7 @@ function attachClipInteractions(el, clip) {
       _raf2 = null;
       if (file2 && layer2) drawPeaks(canvas2, file2.peaks, layer2.color, {
         trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file2.duration,
+        w: clipWidth(clip), h: LAYER_H - 2,
       });
     };
 
@@ -1467,6 +1469,7 @@ function attachClipInteractions(el, clip) {
       _raf3 = null;
       if (file3 && layer3) drawPeaks(canvas3, file3.peaks, layer3.color, {
         trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file3.duration,
+        w: clipWidth(clip), h: LAYER_H - 2,
       });
     };
 
@@ -1517,6 +1520,7 @@ function attachClipInteractions(el, clip) {
       _raf4 = null;
       if (file4 && layer4) drawPeaks(canvas4, file4.peaks, layer4.color, {
         trimStart: clip.trimStart, duration: clip.duration * (clip.playbackRate || 1), fileDuration: file4.duration,
+        w: clipWidth(clip), h: LAYER_H - 2,
       });
     };
 

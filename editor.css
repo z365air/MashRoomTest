@@ -146,6 +146,20 @@ input, button { font-family: inherit; }
   background: var(--panel2); border: 1px solid var(--border2); color: var(--text2);
 }
 .btn-save:hover { background: var(--panel3); color: var(--text); }
+.undo-redo-group {
+  display: flex; gap: 2px;
+}
+.btn-undo, .btn-redo {
+  background: var(--panel2); border: 1px solid var(--border2); color: var(--text2);
+}
+.btn-undo:hover:not(:disabled), .btn-redo:hover:not(:disabled) {
+  background: var(--panel3); color: var(--text);
+}
+.btn-undo:disabled, .btn-redo:disabled {
+  opacity: 0.35; cursor: not-allowed;
+}
+.btn-undo { border-radius: 5px 2px 2px 5px; }
+.btn-redo { border-radius: 2px 5px 5px 2px; }
 .btn-export {
   background: linear-gradient(135deg, var(--accent), var(--accent-d));
   border: 1px solid var(--accent-d); color: #fff;

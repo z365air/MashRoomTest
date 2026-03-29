@@ -154,6 +154,12 @@ function layerIndex(layerId) {
   return state.layers.findIndex(l => l.id === layerId);
 }
 
+function _panLabel(v) {
+  const pct = Math.round(Math.abs(v) * 100);
+  if (pct === 0) return 'C';
+  return (v < 0 ? 'L' : 'R') + pct;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1064,13 +1070,18 @@ function renderLayerHeader(layer) {
           <input type="range" class="layer-vol-slider" min="0" max="100" value="${Math.round(layer.volume * 100)}">
           <span class="layer-vol-val">${Math.round(layer.volume * 100)}</span>
         </div>
+        <div class="layer-pan-group">
+          <span class="layer-pan-label">PAN</span>
+          <input type="range" class="layer-pan-slider" min="-100" max="100" value="${Math.round((layer.pan || 0) * 100)}" title="Double-click to reset to center">
+          <span class="layer-pan-val">${_panLabel(layer.pan || 0)}</span>
+        </div>
       </div>
     </div>
   `;
 
   // Clicking the header activates this layer
   el.addEventListener('mousedown', e => {
-    if (e.target.closest('.layer-btn, .layer-vol-slider, .layer-name-input')) return;
+    if (e.target.closest('.layer-btn, .layer-vol-slider, .layer-pan-slider, .layer-name-input')) return;
     setActiveLayer(layer.id);
   });
 
@@ -1108,6 +1119,23 @@ function renderLayerHeader(layer) {
     layer.volume = v;
     volVal.textContent = volSlider.value;
     engine.setLayerVolume(layer.id, layer.muted ? 0 : v);
+    state.dirty = true;
+  });
+
+  const panSlider = el.querySelector('.layer-pan-slider');
+  const panVal    = el.querySelector('.layer-pan-val');
+  panSlider.addEventListener('input', () => {
+    const v = +panSlider.value / 100;
+    layer.pan = v;
+    panVal.textContent = _panLabel(v);
+    engine.setLayerPan(layer.id, v);
+    state.dirty = true;
+  });
+  panSlider.addEventListener('dblclick', () => {
+    layer.pan = 0;
+    panSlider.value = 0;
+    panVal.textContent = _panLabel(0);
+    engine.setLayerPan(layer.id, 0);
     state.dirty = true;
   });
 

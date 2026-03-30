@@ -58,6 +58,7 @@ function uid() { return _nextId++; }
 let pxPerSec = PX_PER_SEC_BASE;
 let zoomIdx = ZOOM_LEVELS.indexOf(1);   // default = 1×
 let snapEnabled = true;
+let currentProjectKey = null;  // key of currently loaded/saved project
 
 const state = {
   files: new Map(),       // id → { id, name, buffer, duration, color, peaks }
@@ -186,6 +187,56 @@ function escapeHtml(s) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   INDEXED DB  (raw audio ArrayBuffer storage)
+   ═══════════════════════════════════════════════════════════ */
+
+const IDB_NAME  = 'mashroomtest_v1';
+const IDB_STORE = 'audio';
+
+function _idbOpen() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+async function idbPut(key, value) {
+  const db = await _idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = res;
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+async function idbGet(key) {
+  const db = await _idbOpen();
+  return new Promise((res, rej) => {
+    const tx  = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+async function idbDeleteByPrefix(prefix) {
+  const db = await _idbOpen();
+  return new Promise((res, rej) => {
+    const tx    = db.transaction(IDB_STORE, 'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    const req   = store.openCursor();
+    req.onsuccess = e => {
+      const c = e.target.result;
+      if (!c) return;
+      if (String(c.key).startsWith(prefix)) c.delete();
+      c.continue();
+    };
+    tx.oncomplete = res;
+    tx.onerror    = e => rej(e.target.error);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
    AUDIO ENGINE  (clip-based)
    ═══════════════════════════════════════════════════════════ */
 
@@ -219,8 +270,15 @@ const engine = {
 
   async decodeFile(file) {
     this.ensure();
-    const ab = await file.arrayBuffer();
-    return this.ctx.decodeAudioData(ab);
+    const rawAb = await file.arrayBuffer();
+    // decodeAudioData may consume/transfer the buffer, so pass a copy
+    const buffer = await this.ctx.decodeAudioData(rawAb.slice(0));
+    return { buffer, rawAb };
+  },
+
+  async decodeRaw(rawAb) {
+    this.ensure();
+    return this.ctx.decodeAudioData(rawAb.slice(0));
   },
 
   /* ── layer audio nodes ── */
@@ -637,12 +695,12 @@ async function importFiles(fileList) {
 
   for (const f of audio) {
     try {
-      const buffer = await engine.decodeFile(f);
+      const { buffer, rawAb } = await engine.decodeFile(f);
       const name = f.name.replace(/\.[^.]+$/, '');
       const color = nextColor();
       const peaks = await computePeaks(buffer);
       const id = uid();
-      const entry = { id, name, buffer, duration: buffer.duration, color, peaks };
+      const entry = { id, name, buffer, rawAb, duration: buffer.duration, color, peaks };
       state.files.set(id, entry);
       addFilePanelItem(entry);
       state.dirty = true;
@@ -2298,19 +2356,139 @@ function initSaveExport() {
   _updateUndoButtons();
 }
 
-function saveProject() {
-  if (!state.clips.length) { setStatus('Nothing to save.'); return; }
-  const name = document.getElementById('projectName').value || 'Untitled';
-  const key  = 'project_' + Date.now();
-  const data = {
-    name, savedAt: Date.now(),
-    tracks: state.clips.length,
-    layers: state.layers.map(l => ({ id: l.id, name: l.name, color: l.color })),
-  };
-  const save = fn => { try { fn(); setStatus('Project saved.'); state.dirty = false; } catch (_) {} };
-  if (typeof chrome !== 'undefined' && chrome.storage)
-    chrome.storage.local.set({ [key]: data }, () => { setStatus('Project saved.'); state.dirty = false; });
-  else save(() => localStorage.setItem(key, JSON.stringify(data)));
+async function saveProject() {
+  if (!state.clips.length && !state.layers.length) { setStatus('Nothing to save.'); return; }
+
+  const projectName = document.getElementById('projectName').value.trim() || 'Untitled';
+  // Overwrite existing save if we loaded/saved one already; otherwise create new key
+  const key = currentProjectKey || ('project_' + Date.now());
+  setStatus('Saving…');
+
+  try {
+    // 1. Persist raw audio ArrayBuffers to IndexedDB
+    for (const [fileId, file] of state.files) {
+      if (file.rawAb) {
+        await idbPut(`${key}_${fileId}`, file.rawAb);
+      }
+    }
+
+    // 2. Build serialisable metadata (no ArrayBuffers / AudioBuffers)
+    const metadata = {
+      name:          projectName,
+      savedAt:       Date.now(),
+      nextId:        _nextId,
+      colorIdx,
+      activeLayerId: state.activeLayerId,
+      layers: state.layers.map(l => ({ ...l })),
+      files:  [...state.files.values()].map(f => ({
+        id: f.id, name: f.name, duration: f.duration, color: f.color,
+      })),
+      clips: state.clips.map(c => ({
+        ...c,
+        envelope: (c.envelope || defaultEnvelope()).map(p => ({ ...p })),
+      })),
+    };
+
+    // 3. Store metadata
+    await new Promise((res, rej) => {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        chrome.storage.local.set({ [key]: metadata }, () => {
+          chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res();
+        });
+      } else {
+        try { localStorage.setItem(key, JSON.stringify(metadata)); res(); }
+        catch (e) { rej(e); }
+      }
+    });
+
+    currentProjectKey = key;
+    document.getElementById('projectName').value = projectName;
+    setStatus('Project saved.');
+    state.dirty = false;
+  } catch (err) {
+    setStatus('Save failed: ' + err.message);
+    console.error(err);
+  }
+}
+
+async function loadProject(key) {
+  setStatus('Loading project…');
+  try {
+    // 1. Fetch metadata
+    const metadata = await new Promise((res, rej) => {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        chrome.storage.local.get(key, data => {
+          chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res(data[key]);
+        });
+      } else {
+        try { res(JSON.parse(localStorage.getItem(key))); } catch (e) { rej(e); }
+      }
+    });
+    if (!metadata) { setStatus('Project not found.'); return; }
+
+    // 2. Clear current editor state
+    deselectAll(true);
+    clearRange();
+    state.clips.forEach(c => { const el = getClipEl(c.id); if (el) el.remove(); });
+    state.clips = [];
+    state.files.clear();
+    state.layers.forEach(l => {
+      document.querySelector(`.layer-header[data-layer-id="${l.id}"]`)?.remove();
+      tlContent?.querySelectorAll(`.layer-bg-row`).forEach(el => {
+        if (String(el.dataset.layerId) === String(l.id)) el.remove();
+      });
+      engine.removeLayerNodes(l.id);
+    });
+    state.layers = [];
+    document.getElementById('tlEmptyMsg').style.display = '';
+    undoStack.length = 0;
+    redoStack.length = 0;
+    _updateUndoButtons();
+
+    // Restore counters
+    _nextId  = metadata.nextId  || 1;
+    colorIdx = metadata.colorIdx || 0;
+    currentProjectKey = key;
+    document.getElementById('projectName').value = metadata.name || 'Untitled';
+
+    // 3. Restore layers
+    for (const l of (metadata.layers || [])) {
+      state.layers.push(l);
+      engine.createLayerNodes(l);
+      renderLayerHeader(l);
+      renderLayerBg(l);
+    }
+    updateContentSize();
+    if (metadata.activeLayerId) setActiveLayer(metadata.activeLayerId);
+
+    // 4. Restore files — load rawAb from IndexedDB, decode, compute peaks
+    for (const fMeta of (metadata.files || [])) {
+      const rawAb = await idbGet(`${key}_${fMeta.id}`);
+      if (!rawAb) { console.warn(`Audio not found for file ${fMeta.id}`); continue; }
+      const buffer = await engine.decodeRaw(rawAb);
+      const peaks  = await computePeaks(buffer);
+      const entry  = { id: fMeta.id, name: fMeta.name, color: fMeta.color,
+                       duration: buffer.duration, buffer, rawAb, peaks };
+      state.files.set(fMeta.id, entry);
+      addFilePanelItem(entry);
+    }
+
+    // 5. Restore clips
+    for (const c of (metadata.clips || [])) {
+      if (!state.files.has(c.fileId)) continue;
+      state.clips.push(c);
+      renderClip(c);
+    }
+
+    document.getElementById('tlEmptyMsg').style.display = state.clips.length ? 'none' : '';
+    updateContentSize();
+    updateStatusBar();
+    state.dirty = false;
+    setStatus(`Loaded "${metadata.name}"`);
+  } catch (err) {
+    setStatus('Load failed: ' + err.message);
+    console.error(err);
+  }
 }
 
 async function exportWav() {
@@ -2415,9 +2593,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initGlobalDrop();
   initProjectName();
 
-  // Start with 2 default layers
-  addLayer('Layer 1');
-  addLayer('Layer 2');
-
-  setStatus('Ready — import audio files and drag them onto the timeline layers');
+  const projectKey = new URLSearchParams(location.search).get('project');
+  if (projectKey) {
+    // Load saved project — skip default layers (loadProject builds its own)
+    loadProject(projectKey);
+  } else {
+    addLayer('Layer 1');
+    addLayer('Layer 2');
+    setStatus('Ready — import audio files and drag them onto the timeline layers');
+  }
 });

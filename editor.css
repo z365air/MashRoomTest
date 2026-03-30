@@ -428,9 +428,22 @@ body { display: flex; flex-direction: column; }
 .tl-empty-hint { font-size: 11px; color: var(--text4); }
 .tl-empty-hint strong { color: var(--accent); }
 
-/* Playhead */
+/* Playhead — CSS div, no canvas needed */
 .tl-playhead {
-  position: absolute; top: 0; left: 0; pointer-events: none; z-index: 20;
+  position: absolute; top: 0; bottom: 0; left: 0;
+  width: 2px; pointer-events: none; z-index: 20;
+  background: #FF4444;
+  box-shadow: 0 0 6px rgba(255,68,68,0.5);
+  display: none;
+}
+.tl-playhead.visible { display: block; }
+.tl-playhead::before {
+  content: '';
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid #FF4444;
 }
 
 /* ════════════════════════════════════

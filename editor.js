@@ -725,7 +725,7 @@ function initTimeline() {
   });
 
   // Resize observer to re-draw ruler on window resize
-  new ResizeObserver(() => { drawRuler(); resizePlayhead(); }).observe(tlScrollArea);
+  new ResizeObserver(() => { _lastContentW = 0; drawRuler(); resizePlayhead(); }).observe(tlScrollArea);
 
   drawRuler();
   resizePlayhead();
@@ -747,12 +747,14 @@ function contentHeight() {
   return Math.max(state.layers.length * LAYER_H, tlScrollArea.clientHeight || 200);
 }
 
+let _lastContentW = 0;
 function updateContentSize() {
   const w = contentWidth();
   const h = contentHeight();
-  tlContent.style.width = w + 'px';
+  tlContent.style.width  = w + 'px';
   tlContent.style.height = h + 'px';
-  drawRuler();
+  // Only redraw ruler when the timeline actually got wider/narrower.
+  if (w !== _lastContentW) { _lastContentW = w; drawRuler(w); }
   resizePlayhead();
 }
 
@@ -805,8 +807,8 @@ function* tickPositions(intervalSec, totalSec) {
 
 /* ── Ruler drawing ── */
 
-function drawRuler() {
-  const w = contentWidth();
+function drawRuler(w) {
+  if (w === undefined) w = contentWidth();
   const dpr = window.devicePixelRatio || 1;
   const needW = Math.round(w * dpr);
   const needH = Math.round(RULER_H * dpr);
@@ -872,46 +874,23 @@ function drawRuler() {
 /* ── Playhead canvas ── */
 
 function resizePlayhead() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = contentWidth();
-  const h = contentHeight();
-  tlPlayhead.width = w * dpr;
-  tlPlayhead.height = h * dpr;
-  tlPlayhead.style.width = w + 'px';
-  tlPlayhead.style.height = h + 'px';
   drawPlayhead(engine.playhead);
 }
 
 function drawPlayhead(sec) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = parseFloat(tlPlayhead.style.width) || 0;
-  const h = parseFloat(tlPlayhead.style.height) || 0;
-  const ctx = tlPlayhead.getContext('2d');
-  ctx.clearRect(0, 0, tlPlayhead.width, tlPlayhead.height);
-  ctx.save();
-  ctx.scale(dpr, dpr);
-
   const x = sec * pxPerSec;
-  if (x < 0 || x > w) { ctx.restore(); return; }
-
-  // Vertical line
-  ctx.strokeStyle = '#FF4444';
-  ctx.lineWidth = 1.5;
-  ctx.shadowColor = 'rgba(255,68,68,0.5)';
-  ctx.shadowBlur = 4;
-  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-
-  // Triangle at top
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#FF4444';
-  ctx.beginPath(); ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 7); ctx.closePath(); ctx.fill();
-
-  ctx.restore();
+  const cw = contentWidth();
+  if (x < 0 || x > cw) {
+    tlPlayhead.classList.remove('visible');
+    return;
+  }
+  tlPlayhead.classList.add('visible');
+  tlPlayhead.style.left = x + 'px';
 
   // Auto-scroll to keep playhead visible during playback
   if (engine.playing) {
     const vis = tlScrollArea.clientWidth;
-    const sl = tlScrollArea.scrollLeft;
+    const sl  = tlScrollArea.scrollLeft;
     if (x < sl || x > sl + vis - 60) {
       tlScrollArea.scrollLeft = x - vis * 0.2;
     }

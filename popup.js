@@ -32,7 +32,9 @@ function loadStats() {
         const latest = projects
           .map(k => ({ key: k, ...data[k] }))
           .sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))[0];
-        lastTracks = (latest.tracks || []).length;
+        // clips is now an array in the new format
+        const clipCount = Array.isArray(latest.clips) ? latest.clips.length : (latest.tracks || 0);
+        lastTracks = clipCount;
       } catch (_) {}
     }
     document.getElementById('lastTracks').textContent = lastTracks;

@@ -22,6 +22,32 @@ const RULER_H = 28;
 const MIN_CLIP_PX = 8;         // minimum clip width in pixels
 const WAVEFORM_BUCKETS = 800;  // peak resolution per file
 
+// Volume envelope — Y positions within a clip (px, LAYER_H-2 = 74px tall)
+const ENV_Y_TOP = (LAYER_H - 2) * 0.25;   // 18.5 px  →  v = 1.0
+const ENV_Y_BOT = (LAYER_H - 2) * 0.75;   // 55.5 px  →  v = 0.0
+
+function envVToY(v) {
+  return ENV_Y_TOP + (1 - Math.max(0, Math.min(1, v))) * (ENV_Y_BOT - ENV_Y_TOP);
+}
+function envYToV(y) {
+  return Math.max(0, Math.min(1, 1 - (y - ENV_Y_TOP) / (ENV_Y_BOT - ENV_Y_TOP)));
+}
+function defaultEnvelope() { return [{t: 0, v: 1}, {t: 1, v: 1}]; }
+
+/** Linear-interpolate the envelope at fraction t (0–1). */
+function interpolateEnvelope(envelope, t) {
+  const s = [...envelope].sort((a, b) => a.t - b.t);
+  if (t <= s[0].t) return s[0].v;
+  if (t >= s[s.length - 1].t) return s[s.length - 1].v;
+  for (let i = 0; i < s.length - 1; i++) {
+    if (t >= s[i].t && t <= s[i + 1].t) {
+      const f = (t - s[i].t) / (s[i + 1].t - s[i].t);
+      return s[i].v + f * (s[i + 1].v - s[i].v);
+    }
+  }
+  return 1;
+}
+
 /* ═══════════════════════════════════════════════════════════
    STATE
    ═══════════════════════════════════════════════════════════ */
@@ -331,7 +357,21 @@ const engine = {
       const src = this.ctx.createBufferSource();
       src.buffer = file.buffer;
       src.playbackRate.value = rate;
-      src.connect(nodes.gain);
+
+      // Per-clip gain node for envelope automation
+      const clipGain = this.ctx.createGain();
+      clipGain.connect(nodes.gain);
+      src.connect(clipGain);
+
+      // Schedule volume envelope
+      const env = clip.envelope || defaultEnvelope();
+      const startT = Math.max(0, clipOff) / clip.duration;  // fraction already elapsed
+      clipGain.gain.setValueAtTime(interpolateEnvelope(env, startT), when);
+      for (const pt of [...env].sort((a, b) => a.t - b.t)) {
+        if (pt.t <= startT) continue;
+        clipGain.gain.linearRampToValueAtTime(pt.v, when + (pt.t - startT) * clip.duration);
+      }
+
       src.start(when, bufStart, remaining * rate);  // duration in buffer-time = wall-clock * rate
       this.sources.push(src);
     }
@@ -392,7 +432,17 @@ const engine = {
       const src = offline.createBufferSource();
       src.buffer = file.buffer;
       src.playbackRate.value = clip.playbackRate || 1;
-      src.connect(dest);
+
+      // Per-clip gain for envelope
+      const clipGain = offline.createGain();
+      clipGain.connect(dest);
+      src.connect(clipGain);
+      const env = [...(clip.envelope || defaultEnvelope())].sort((a, b) => a.t - b.t);
+      clipGain.gain.setValueAtTime(env[0].v, clip.startTime);
+      for (let i = 1; i < env.length; i++) {
+        clipGain.gain.linearRampToValueAtTime(env[i].v, clip.startTime + env[i].t * clip.duration);
+      }
+
       src.start(clip.startTime, clip.trimStart, clip.duration * (clip.playbackRate || 1));
     }
 
@@ -1164,7 +1214,7 @@ function addClip(fileId, layerId, startTime, duration) {
   const file = state.files.get(fileId);
   if (!file) return null;
   const id = uid();
-  const clip = { id, fileId, layerId, startTime, duration: duration || file.duration, trimStart: 0, playbackRate: 1 };
+  const clip = { id, fileId, layerId, startTime, duration: duration || file.duration, trimStart: 0, playbackRate: 1, envelope: defaultEnvelope() };
   state.clips.push(clip);
   renderClip(clip);
   updateContentSize();
@@ -1212,6 +1262,7 @@ function renderClip(clip) {
   el.innerHTML = `
     <div class="clip-bg"></div>
     <canvas class="clip-wave-canvas"></canvas>
+    <svg class="clip-envelope-svg" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="clip-label">
       <span class="clip-label-text">${escapeHtml(file.name)}</span>
     </div>
@@ -1239,6 +1290,7 @@ function renderClip(clip) {
   requestAnimationFrame(() => _drawWhenReady(5));
   _refreshClipBadge(el, clip);
 
+  requestAnimationFrame(() => renderEnvelope(el, clip));
   attachClipInteractions(el, clip);
   tlContent.insertBefore(el, tlPlayhead);
 }
@@ -1253,6 +1305,38 @@ function _refreshClipBadge(el, clip) {
     badge.hidden = false;
     badge.textContent = '×' + rate.toFixed(2);
   }
+}
+
+/** Rebuild the envelope SVG inside a clip element. */
+function renderEnvelope(clipEl, clip) {
+  const svg = clipEl.querySelector('.clip-envelope-svg');
+  if (!svg) return;
+  const W = clipWidth(clip);
+  const env = clip.envelope || defaultEnvelope();
+  // Sort by t, tagging each with its original index
+  const pts = env.map((p, i) => ({...p, origIdx: i})).sort((a, b) => a.t - b.t);
+
+  // Polyline
+  let line = svg.querySelector('.clip-env-line');
+  if (!line) {
+    line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    line.setAttribute('class', 'clip-env-line');
+    svg.appendChild(line);
+  }
+  line.setAttribute('points', pts.map(p => `${p.t * W},${envVToY(p.v)}`).join(' '));
+
+  // Circles — remove old, add fresh
+  svg.querySelectorAll('.clip-env-pt').forEach(c => c.remove());
+  pts.forEach((p, sortedIdx) => {
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('class', 'clip-env-pt');
+    c.setAttribute('cx', p.t * W);
+    c.setAttribute('cy', envVToY(p.v));
+    c.setAttribute('r', 5);
+    c.dataset.idx  = p.origIdx;
+    c.dataset.edge = (sortedIdx === 0 || sortedIdx === pts.length - 1) ? '1' : '';
+    svg.appendChild(c);
+  });
 }
 
 function refreshClipEl(clip) {
@@ -1273,6 +1357,7 @@ function refreshClipEl(clip) {
     }));
   }
   _refreshClipBadge(el, clip);
+  renderEnvelope(el, clip);
 }
 
 function refreshAllClips() {
@@ -1539,7 +1624,70 @@ function attachClipInteractions(el, clip) {
     e.preventDefault();
     e.stopPropagation();
     if (!state.selection.has(clip.id)) { deselectAll(); selectClip(clip.id); }
-    showCtxMenu(e.clientX, e.clientY, 'clip');
+    // Detect if click was on a waypoint
+    const ptEl = e.target.closest('.clip-env-pt');
+    let waypointIdx = null;
+    if (ptEl) {
+      const idx = Number(ptEl.dataset.idx);
+      const isEdge = ptEl.dataset.edge === '1';
+      waypointIdx = isEdge ? null : idx;
+    }
+    showCtxMenu(e.clientX, e.clientY, { clip, waypointIdx });
+  });
+
+  // ── Envelope waypoint interactions ──
+  attachEnvelopeInteractions(el, clip);
+}
+
+function attachEnvelopeInteractions(clipEl, clip) {
+  const svg = clipEl.querySelector('.clip-envelope-svg');
+  if (!svg) return;
+
+  svg.addEventListener('mousedown', e => {
+    const ptEl = e.target.closest('.clip-env-pt');
+    if (!ptEl) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const idx    = Number(ptEl.dataset.idx);
+    const isEdge = ptEl.dataset.edge === '1';
+    const preSnap = _snapshot();
+
+    const svgRect = svg.getBoundingClientRect();
+    const origPt  = {...clip.envelope[idx]};
+    const origX   = e.clientX;
+    const origY   = e.clientY;
+    const W       = clipWidth(clip);
+
+    // Find sorted neighbours for horizontal clamping (non-edge only)
+    const sorted = clip.envelope.map((p, i) => ({...p, i})).sort((a, b) => a.t - b.t);
+    const sIdx   = sorted.findIndex(p => p.i === idx);
+    const tMin   = isEdge ? origPt.t : (sIdx > 0 ? sorted[sIdx - 1].t + 0.001 : 0);
+    const tMax   = isEdge ? origPt.t : (sIdx < sorted.length - 1 ? sorted[sIdx + 1].t - 0.001 : 1);
+
+    const onMove = ev => {
+      const dy = ev.clientY - origY;
+      const dx = ev.clientX - origX;
+
+      const newY = envVToY(origPt.v) + dy;
+      clip.envelope[idx].v = envYToV(newY);
+
+      if (!isEdge) {
+        const newT = Math.max(tMin, Math.min(tMax, origPt.t + dx / W));
+        clip.envelope[idx].t = newT;
+      }
+      renderEnvelope(clipEl, clip);
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      _commitUndo(preSnap);
+      state.dirty = true;
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
   });
 }
 
@@ -1890,6 +2038,8 @@ function copySelected() {
     relTime:     c.startTime - earliest,
     duration:    c.duration,
     trimStart:   c.trimStart,
+    playbackRate: c.playbackRate || 1,
+    envelope:    (c.envelope || defaultEnvelope()).map(p => ({...p})),
     layerOffset: layerIndex(c.layerId),
   }));
   setStatus(`Copied ${selected.length} clip(s)`);
@@ -1915,7 +2065,13 @@ function pasteClips() {
       || state.layers[0];
     if (!layer || !state.files.has(snap.fileId)) continue;
     const clip = addClip(snap.fileId, layer.id, pasteAt + snap.relTime, snap.duration);
-    if (clip) { clip.trimStart = snap.trimStart; selectClip(clip.id, true); }
+    if (clip) {
+      clip.trimStart = snap.trimStart;
+      if (snap.playbackRate) clip.playbackRate = snap.playbackRate;
+      if (snap.envelope)     clip.envelope = snap.envelope.map(p => ({...p}));
+      refreshClipEl(clip);
+      selectClip(clip.id, true);
+    }
   }
   updateSelectionStatus();
   setStatus(`Pasted ${state.clipboard.length} clip(s)`);
@@ -2035,6 +2191,13 @@ function initKeyboard() {
       case ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey)):
         e.preventDefault(); redo();
         break;
+      case e.key === 'w' || e.key === 'W': {
+        e.preventDefault();
+        const sel = state.clips.find(c => state.selection.has(c.id));
+        if (sel) addEnvelopeWaypoint(sel);
+        else setStatus('Select a clip first to add a waypoint');
+        break;
+      }
       case e.key === 'Delete' || e.key === 'Backspace':
         e.preventDefault(); deleteSelected();
         break;
@@ -2052,32 +2215,72 @@ function initKeyboard() {
    CONTEXT MENU
    ═══════════════════════════════════════════════════════════ */
 
-function showCtxMenu(x, y, context) {
+// _ctxEnvState holds envelope context for the current context menu
+let _ctxEnvState = null;  // { clip, waypointIdx } or null
+
+function showCtxMenu(x, y, envState) {
   const menu = document.getElementById('ctxMenu');
-  const paste = document.getElementById('ctxPaste');
-  paste.disabled = !state.clipboard.length;
+  document.getElementById('ctxPaste').disabled = !state.clipboard.length;
+
+  // Show/hide envelope items
+  const addBtn = document.getElementById('ctxAddWaypoint');
+  const remBtn = document.getElementById('ctxRemoveWaypoint');
+  _ctxEnvState = envState || null;
+
+  // "Add waypoint" is always available when right-clicking a clip
+  addBtn.hidden = !envState;
+  // "Remove waypoint" only when clicking a non-edge waypoint
+  remBtn.hidden = !(envState && envState.waypointIdx !== null);
 
   menu.removeAttribute('hidden');
-  // Keep within viewport
-  const mw = 170, mh = 140;
+  const mw = 180, mh = 200;
   menu.style.left = Math.min(x, window.innerWidth  - mw) + 'px';
   menu.style.top  = Math.min(y, window.innerHeight - mh) + 'px';
 
-  // Bind action once
   const handler = e => {
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (!action) return;
     hideCtxMenu();
-    if (action === 'cut')    cutSelected();
+    if      (action === 'cut')    cutSelected();
     else if (action === 'copy')   copySelected();
     else if (action === 'paste')  pasteClips();
     else if (action === 'delete') deleteSelected();
+    else if (action === 'addWaypoint'    && _ctxEnvState) addEnvelopeWaypoint(_ctxEnvState.clip);
+    else if (action === 'removeWaypoint' && _ctxEnvState) removeEnvelopeWaypoint(_ctxEnvState.clip, _ctxEnvState.waypointIdx);
   };
   menu.addEventListener('click', handler, { once: true });
 }
 
 function hideCtxMenu() {
   document.getElementById('ctxMenu').setAttribute('hidden', '');
+}
+
+/* ── Envelope waypoint add / remove ── */
+
+function addEnvelopeWaypoint(clip) {
+  const t = (engine.playhead - clip.startTime) / clip.duration;
+  if (t < 0 || t > 1) { setStatus('Playhead is outside this clip'); return; }
+  pushUndo();
+  const v = interpolateEnvelope(clip.envelope, t);
+  clip.envelope.push({t, v});
+  const el = getClipEl(clip.id);
+  if (el) renderEnvelope(el, clip);
+  state.dirty = true;
+  setStatus('Waypoint added');
+}
+
+function removeEnvelopeWaypoint(clip, idx) {
+  // Guard: never remove the two edge waypoints
+  const sorted = [...clip.envelope].sort((a, b) => a.t - b.t);
+  const pt = clip.envelope[idx];
+  if (!pt) return;
+  if (pt === sorted[0] || pt === sorted[sorted.length - 1]) return;
+  pushUndo();
+  clip.envelope.splice(idx, 1);
+  const el = getClipEl(clip.id);
+  if (el) renderEnvelope(el, clip);
+  state.dirty = true;
+  setStatus('Waypoint removed');
 }
 
 document.addEventListener('click',       hideCtxMenu);
